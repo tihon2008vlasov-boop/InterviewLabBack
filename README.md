@@ -29,6 +29,30 @@ uvicorn app.main:app --reload --port 8000
 
 Swagger: http://localhost:8000/docs · Health: `GET /api/health`
 
+## .env для разработки
+
+Готовый рабочий `.env` — скопируй как есть в `backend/.env`:
+
+```env
+ENV=development
+HOST=0.0.0.0
+PORT=8000
+CLIENT_URL=http://localhost:5173
+
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DB=interviewlab
+
+JWT_SECRET=interviewlab-dev-secret-2026
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=10080
+
+INVITE_LINK_BASE_URL=http://localhost:5173/test
+```
+
+Секретов тут нет: `localhost:27017` — это адрес MongoDB **на твоём же компьютере**.
+Этот env одинаковый у всех, но базу он не «расшаривает» — у каждого своя (см. ниже).
+Полный список переменных (SMTP, `ANTHROPIC_API_KEY`, S3) — в `.env.example`.
+
 ## MongoDB
 
 Нужен запущенный MongoDB (`mongodb://localhost:27017` по умолчанию).
@@ -45,11 +69,25 @@ Swagger: http://localhost:8000/docs · Health: `GET /api/health`
 
 **У каждого разработчика — своя локальная база.** `.env` с `localhost:27017` у всех
 одинаковый, но данные не общие: каждый прогоняет `python -m app.seed` и получает свой
-стартовый набор. Если нужна **одна общая БД на команду** — бесплатный кластер
-[MongoDB Atlas](https://www.mongodb.com/atlas) (M0): создать кластер → Database Access
-(юзер/пароль) → Network Access (добавить IP или `0.0.0.0/0` на время разработки) →
-взять connection string и заменить в `.env` одну строку:
-`MONGODB_URI=mongodb+srv://user:pass@cluster.xxxxx.mongodb.net`.
+стартовый набор.
+
+### Общая база на команду (MongoDB Atlas, бесплатно)
+
+Если нужно, чтобы все видели одни и те же данные:
+
+1. Зарегистрироваться на [mongodb.com/atlas](https://www.mongodb.com/atlas) → **Create Cluster** → tier **M0 (Free)**
+2. **Database Access** → Add New Database User → логин/пароль (запомнить)
+3. **Network Access** → Add IP Address → `0.0.0.0/0` (разрешить всем; на время разработки ок)
+4. **Connect → Drivers** → скопировать connection string вида
+   `mongodb+srv://user:<password>@cluster0.xxxxx.mongodb.net`
+5. Каждый в команде заменяет в своём `.env` одну строку:
+   ```env
+   MONGODB_URI=mongodb+srv://user:пароль@cluster0.xxxxx.mongodb.net
+   ```
+   Локальную Mongo при этом ставить не нужно. Сид (`python -m app.seed`) прогоняется
+   один раз кем-то одним — он идемпотентный, повторные запуски ничего не дублируют.
+
+⚠️ Строку Atlas с паролем в git не коммитить — передавать лично (мессенджер/менеджер секретов).
 
 ## Как посмотреть коллекции
 

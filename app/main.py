@@ -10,7 +10,15 @@ from app.core.db import init_db
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    await init_db()
+    try:
+        await init_db()
+    except Exception as err:
+        print(
+            "[db] ERROR: cannot connect to MongoDB "
+            f"({settings.mongodb_uri}): {err}\n"
+            "[db] Install and start MongoDB Community Server "
+            "(winget install MongoDB.Server), then restart the API."
+        )
     yield
 
 

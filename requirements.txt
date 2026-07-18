@@ -1,7 +1,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.32
-beanie>=1.27
-motor>=3.6
+beanie>=2.0
+pymongo>=4.13
 pydantic>=2.9
 pydantic-settings>=2.6
 python-jose[cryptography]>=3.3
