@@ -29,25 +29,37 @@ uvicorn app.main:app --reload --port 8000
 
 Swagger: http://localhost:8000/docs · Health: `GET /api/health`
 
-Нужен запущенный MongoDB (`mongodb://localhost:27017` по умолчанию). Проще всего — из папки `backend/`:
+## MongoDB
 
-```bash
-docker compose up -d
-```
+Нужен запущенный MongoDB (`mongodb://localhost:27017` по умолчанию).
 
-Это поднимет Mongo + веб-просмотрщик коллекций (mongo-express) на http://localhost:8081.
+**Установка (один раз, всё по дефолту):**
+
+1. Скачать [MongoDB Community Server](https://www.mongodb.com/try/download/community) (msi для Windows)
+2. В установщике ничего не менять: «Complete», галочка **Install MongoDB as a Service** оставлена
+3. Готово — Mongo запускается сама как служба Windows и слушает `localhost:27017`
+
+Либо одной командой: `winget install MongoDB.Server`
+
+Проверить, что служба работает: `Get-Service MongoDB` (Status должен быть `Running`).
+
+**У каждого разработчика — своя локальная база.** `.env` с `localhost:27017` у всех
+одинаковый, но данные не общие: каждый прогоняет `python -m app.seed` и получает свой
+стартовый набор. Если нужна **одна общая БД на команду** — бесплатный кластер
+[MongoDB Atlas](https://www.mongodb.com/atlas) (M0): создать кластер → Database Access
+(юзер/пароль) → Network Access (добавить IP или `0.0.0.0/0` на время разработки) →
+взять connection string и заменить в `.env` одну строку:
+`MONGODB_URI=mongodb+srv://user:pass@cluster.xxxxx.mongodb.net`.
 
 ## Как посмотреть коллекции
 
 База: `interviewlab` (см. `MONGODB_DB` в `.env`). Коллекции создаются при первой записи —
-зарегистрируй пользователя через Swagger (`POST /api/auth/register`), появятся `users` и `companies`.
+после `python -m app.seed` появятся `users`, `companies`, `tests`, `candidates`.
 
-- **mongo-express** — http://localhost:8081 → база `interviewlab`
-- **MongoDB Compass** (GUI) — строка подключения `mongodb://localhost:27017`
-- **mongosh** — `docker exec -it interviewlab-mongo mongosh`, затем `use interviewlab`, `show collections`, `db.users.find().pretty()`
-
-Для общей командной БД — бесплатный кластер [MongoDB Atlas](https://www.mongodb.com/atlas),
-в `.env` меняется только `MONGODB_URI`.
+- **MongoDB Compass** (GUI, рекомендую) — [скачать](https://www.mongodb.com/try/download/compass),
+  строка подключения `mongodb://localhost:27017`, слева база `interviewlab`
+- **mongosh** (консоль, ставится вместе с сервером): `mongosh`, затем
+  `use interviewlab`, `show collections`, `db.users.find().pretty()`
 
 ## Структура
 
