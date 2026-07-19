@@ -12,6 +12,22 @@ class SessionStartIn(BaseModel):
     position: str = ""
 
 
+class SessionTaskOut(BaseModel):
+    id: str
+    type: str
+    title: str
+    description: str
+    points: int
+    starter_code: str
+    readme: str
+    figma_url: str
+    image_url: str | None
+    attached_files: list[str]
+    time_limit_min: int | None
+    camera_required: bool
+    tab_switch_lock: bool
+
+
 class SessionStartOut(BaseModel):
     session_id: str
     candidate_id: str
@@ -19,6 +35,7 @@ class SessionStartOut(BaseModel):
     test_name: str
     duration_min: int
     language: str
+    tasks: list[SessionTaskOut] = Field(default_factory=list)
 
 
 class ReplayEventIn(BaseModel):

@@ -53,9 +53,34 @@ async def seed() -> None:
                 TestTask(
                     id=str(uuid4()),
                     type="code",
-                    title="Product search page",
-                    description="Build a product search page with debounced input, loading and empty states on top of the provided fake API.",
+                    title="Страница поиска товаров",
+                    description=(
+                        "Соберите страницу поиска товаров поверх выданного фейкового API.\n\n"
+                        "Требования:\n"
+                        "1. Поле поиска фильтрует товары по названию — добавьте debounce\n"
+                        "2. Показывайте состояние загрузки\n"
+                        "3. Обрабатывайте ошибки и пустые результаты\n"
+                        "4. Выводите название, цену и категорию товара\n"
+                        "5. Показывайте суммарную стоимость видимых товаров"
+                    ),
                     points=40,
+                    starter_code=(
+                        "import { useState } from 'react'\n\n"
+                        "export default function App() {\n"
+                        "  return (\n"
+                        "    <div className=\"app\">\n"
+                        "      <h1>Product Search</h1>\n"
+                        "      {/* Реализуйте поиск и список результатов */}\n"
+                        "    </div>\n"
+                        "  )\n"
+                        "}\n"
+                    ),
+                    readme=(
+                        "# Поиск товаров\n\n"
+                        "Используйте fetchProducts(query) из src/api/products.js.\n"
+                        "Мы смотрим на структуру компонентов, гонки запросов,\n"
+                        "обработку крайних случаев и базовую доступность."
+                    ),
                 ),
                 TestTask(
                     id=str(uuid4()),

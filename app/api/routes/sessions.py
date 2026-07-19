@@ -12,6 +12,7 @@ from app.schemas.session import (
     SessionStartIn,
     SessionStartOut,
     SessionSubmitIn,
+    SessionTaskOut,
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -114,6 +115,24 @@ async def start_session(code: str, payload: SessionStartIn) -> SessionStartOut:
         test_name=test.name,
         duration_min=test.duration_min,
         language=test.language,
+        tasks=[
+            SessionTaskOut(
+                id=t.id,
+                type=t.type,
+                title=t.title,
+                description=t.description,
+                points=t.points,
+                starter_code=t.starter_code,
+                readme=t.readme,
+                figma_url=t.figma_url,
+                image_url=t.image_url,
+                attached_files=t.attached_files,
+                time_limit_min=t.settings.time_limit_min,
+                camera_required=t.settings.camera_required,
+                tab_switch_lock=t.settings.tab_switch_lock,
+            )
+            for t in test.tasks
+        ],
     )
 
 

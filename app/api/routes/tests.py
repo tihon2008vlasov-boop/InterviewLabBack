@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.security import get_current_user_id
 from app.models.invitation import Invitation
 from app.models.test import InviteLink, Test
+from app.models.user import User
 from app.schemas.test import InvitationsIn, LinkIn, TestIn, TestPatch
 
 router = APIRouter(prefix="/tests", tags=["tests"], dependencies=[Depends(get_current_user_id)])
@@ -34,7 +35,12 @@ async def list_tests() -> list[Test]:
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_test(payload: TestIn, user_id: str = Depends(get_current_user_id)) -> Test:
-    test = Test(company_id="", created_by=user_id, **payload.model_dump())
+    user = await User.get(user_id)
+    test = Test(
+        company_id=user.company_id if user else "",
+        created_by=user_id,
+        **payload.model_dump(),
+    )
     return await Test.insert_one(test)
 
 
