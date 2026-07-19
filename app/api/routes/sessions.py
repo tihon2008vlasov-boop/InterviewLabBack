@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from app.core.security import get_current_user_id
 from app.models.candidate import ActivityEvent, Candidate, ReplayEvent
@@ -14,6 +14,7 @@ from app.schemas.session import (
     SessionSubmitIn,
     SessionTaskOut,
 )
+from app.services.candidate_analysis import analyze_candidate_solution
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -115,24 +116,7 @@ async def start_session(code: str, payload: SessionStartIn) -> SessionStartOut:
         test_name=test.name,
         duration_min=test.duration_min,
         language=test.language,
-        tasks=[
-            SessionTaskOut(
-                id=t.id,
-                type=t.type,
-                title=t.title,
-                description=t.description,
-                points=t.points,
-                starter_code=t.starter_code,
-                readme=t.readme,
-                figma_url=t.figma_url,
-                image_url=t.image_url,
-                attached_files=t.attached_files,
-                time_limit_min=t.settings.time_limit_min,
-                camera_required=t.settings.camera_required,
-                tab_switch_lock=t.settings.tab_switch_lock,
-            )
-            for t in test.tasks
-        ],
+        tasks=test.tasks,
     )
 
 
@@ -158,7 +142,9 @@ async def ingest_events(session_id: str, payload: SessionEventsIn) -> dict:
 
 
 @router.post("/{session_id}/submit")
-async def submit_session(session_id: str, payload: SessionSubmitIn) -> dict:
+async def submit_session(
+    session_id: str, payload: SessionSubmitIn, background_tasks: BackgroundTasks
+) -> dict:
     session = await get_session_or_404(session_id)
     if session.ended_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Session is already finished")
@@ -172,8 +158,11 @@ async def submit_session(session_id: str, payload: SessionSubmitIn) -> dict:
     candidate = await Candidate.get(session.candidate_id)
     if candidate:
         candidate.status = "completed"
+        if candidate.score is None:
+            candidate.analysis_status = "pending"
         candidate.completed_at = now()
         candidate.submitted_files = payload.files
+        candidate.replay.extend(ReplayEvent(**event.model_dump()) for event in payload.replay_events)
         candidate.duration_sec = payload.duration_sec or max(
             0, int((now() - as_utc(session.started_at)).total_seconds())
         )
@@ -181,5 +170,11 @@ async def submit_session(session_id: str, payload: SessionSubmitIn) -> dict:
             ActivityEvent(at=now(), kind="submitted", label="Submitted the test")
         )
         await candidate.save()
+        if candidate.score is None:
+            background_tasks.add_task(
+                analyze_candidate_solution,
+                str(candidate.id),
+                session.test_id,
+            )
 
     return {"ok": True, "message": "Submission received, AI analysis will start shortly"}

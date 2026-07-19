@@ -20,8 +20,18 @@ class Settings(BaseSettings):
 
     invite_link_base_url: str = "http://localhost:5173/test"
 
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_pass: str = ""
+    email_from: str = "InterviewLab <no-reply@interviewlab.ai>"
+
     anthropic_api_key: str = ""
     ai_model: str = "claude-sonnet-5"
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.5-flash"
 
 
 @lru_cache

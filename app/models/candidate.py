@@ -14,12 +14,30 @@ class SkillScore(BaseModel):
     comment: str = ""
 
 
+class TaskScore(BaseModel):
+    task: str
+    score: int = Field(ge=0, le=100)
+    comment: str = ""
+
+
+class CodeFinding(BaseModel):
+    file: str
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    severity: Literal["info", "warning", "error"]
+    title: str
+    explanation: str
+    suggestion: str = ""
+
+
 class AIReport(BaseModel):
     summary: str = ""
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
     verdict: str = ""
     skills: list[SkillScore] = Field(default_factory=list)
+    task_scores: list[TaskScore] = Field(default_factory=list)
+    code_findings: list[CodeFinding] = Field(default_factory=list)
 
 
 class SubmittedFile(BaseModel):
@@ -68,6 +86,8 @@ class Candidate(Document):
     invited_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
     duration_sec: int | None = None
+    analysis_status: Literal["not_started", "pending", "completed", "failed"] = "not_started"
+    analyzed_at: datetime | None = None
 
     class Settings:
         name = "candidates"
