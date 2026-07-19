@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from app.core.security import get_current_user_id
 from app.models.candidate import Candidate, CandidateStatus
+from app.models.test import Test
+from app.services.candidate_analysis import analyze_candidate_solution
 
 router = APIRouter(
     prefix="/candidates", tags=["candidates"], dependencies=[Depends(get_current_user_id)]
@@ -20,8 +22,18 @@ async def get_candidate_or_404(candidate_id: str) -> Candidate:
     return candidate
 
 
+async def candidate_out(candidate: Candidate) -> dict:
+    test = await Test.get(candidate.test_id)
+    data = candidate.model_dump(mode="json", by_alias=True)
+    data["_id"] = str(candidate.id)
+    data["test_name"] = test.name if test else "Удалённый тест"
+    data["level"] = test.level if test else "middle"
+    data["language"] = test.language if test else "javascript"
+    return data
+
+
 @router.get("/")
-async def list_candidates(status_filter: str | None = None, search: str | None = None) -> list[Candidate]:
+async def list_candidates(status_filter: str | None = None, search: str | None = None) -> list[dict]:
     query: dict = {}
     if status_filter and status_filter != "all":
         query["status"] = status_filter
@@ -31,24 +43,39 @@ async def list_candidates(status_filter: str | None = None, search: str | None =
             {"email": {"$regex": search, "$options": "i"}},
             {"position": {"$regex": search, "$options": "i"}},
         ]
-    return await Candidate.find(query).sort(-Candidate.invited_at).to_list()
+    candidates = await Candidate.find(query).sort(-Candidate.invited_at).to_list()
+    return [await candidate_out(candidate) for candidate in candidates]
 
 
 @router.get("/{candidate_id}")
-async def get_candidate(candidate_id: str) -> Candidate:
-    return await get_candidate_or_404(candidate_id)
+async def get_candidate(candidate_id: str) -> dict:
+    return await candidate_out(await get_candidate_or_404(candidate_id))
 
 
 @router.patch("/{candidate_id}/status")
-async def update_status(candidate_id: str, payload: StatusIn) -> Candidate:
+async def update_status(candidate_id: str, payload: StatusIn) -> dict:
     candidate = await get_candidate_or_404(candidate_id)
     candidate.status = payload.status
     await candidate.save()
-    return candidate
+    return await candidate_out(candidate)
 
 
-@router.post("/{candidate_id}/analyze", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def analyze_candidate(candidate_id: str) -> dict:
-    return {
-        "detail": "Not implemented: run AI analysis over submitted files and replay, store ai_report"
-    }
+@router.post("/{candidate_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
+async def analyze_candidate(candidate_id: str, background_tasks: BackgroundTasks) -> dict:
+    candidate = await get_candidate_or_404(candidate_id)
+    if candidate.status != "completed":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Candidate has not completed the test")
+    if not candidate.submitted_files:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Candidate has not submitted a solution")
+    if candidate.score is not None or candidate.analysis_status == "completed":
+        return {"ok": True, "message": "AI analysis already completed"}
+    if candidate.analysis_status == "pending":
+        return {"ok": True, "message": "AI analysis is already running"}
+    candidate.analysis_status = "pending"
+    await candidate.save()
+    background_tasks.add_task(
+        analyze_candidate_solution,
+        str(candidate.id),
+        candidate.test_id,
+    )
+    return {"ok": True, "message": "AI analysis started"}

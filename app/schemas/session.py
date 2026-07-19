@@ -4,6 +4,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from app.models.candidate import SubmittedFile
 from app.models.session import SessionStage
+from app.models.test import TestTask
 
 
 class SessionStartIn(BaseModel):
@@ -19,6 +20,7 @@ class SessionStartOut(BaseModel):
     test_name: str
     duration_min: int
     language: str
+    tasks: list[TestTask]
 
 
 class ReplayEventIn(BaseModel):
@@ -43,6 +45,7 @@ class SessionEventsIn(BaseModel):
 class SessionSubmitIn(BaseModel):
     files: list[SubmittedFile] = Field(default_factory=list)
     duration_sec: int | None = None
+    replay_events: list[ReplayEventIn] = Field(default_factory=list)
 
 
 class LiveSessionOut(BaseModel):

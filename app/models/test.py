@@ -15,6 +15,21 @@ class TaskSettings(BaseModel):
     tab_switch_lock: bool = True
 
 
+class AlgorithmTestCase(BaseModel):
+    id: str
+    input: str = ""
+    expected_output: str = ""
+
+
+class TaskContentBlock(BaseModel):
+    id: str
+    title: str = ""
+    description: str = ""
+    starter_code: str = ""
+    readme: str = ""
+    test_cases: list[AlgorithmTestCase] = Field(default_factory=list)
+
+
 class TestTask(BaseModel):
     id: str
     type: TaskType
@@ -26,6 +41,8 @@ class TestTask(BaseModel):
     figma_url: str = ""
     image_url: str | None = None
     attached_files: list[str] = Field(default_factory=list)
+    subtasks: list[TaskContentBlock] = Field(default_factory=list)
+    test_cases: list[AlgorithmTestCase] = Field(default_factory=list)
     settings: TaskSettings = Field(default_factory=TaskSettings)
 
 
