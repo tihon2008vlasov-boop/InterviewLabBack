@@ -19,6 +19,7 @@ from app.schemas.ai import (
 
 logger = logging.getLogger(__name__)
 MAX_GEMINI_ATTEMPTS = 2
+GEMINI_READ_TIMEOUT_SEC = 75
 
 TASK_TYPE_INSTRUCTIONS = {
     "code": (
@@ -139,7 +140,7 @@ def _build_prompt(payload: GenerateTaskIn) -> str:
 
 
 def _request_gemini(payload: GenerateTaskIn) -> dict:
-    model = quote(settings.gemini_model, safe="")
+    model = quote(settings.gemini_generation_model, safe="")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     body = {
         "contents": [{"role": "user", "parts": [{"text": _build_prompt(payload)}]}],
@@ -161,7 +162,7 @@ def _request_gemini(payload: GenerateTaskIn) -> dict:
         },
         method="POST",
     )
-    with urlopen(request, timeout=45) as response:
+    with urlopen(request, timeout=GEMINI_READ_TIMEOUT_SEC) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -203,7 +204,7 @@ def _build_mockup_prompt(payload: GenerateMockupIn) -> str:
 
 
 def _request_mockup(payload: GenerateMockupIn) -> dict:
-    model = quote(settings.gemini_model, safe="")
+    model = quote(settings.gemini_generation_model, safe="")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     body = {
         "contents": [{"role": "user", "parts": [{"text": _build_mockup_prompt(payload)}]}],
@@ -225,7 +226,7 @@ def _request_mockup(payload: GenerateMockupIn) -> dict:
         },
         method="POST",
     )
-    with urlopen(request, timeout=60) as response:
+    with urlopen(request, timeout=GEMINI_READ_TIMEOUT_SEC) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -263,7 +264,7 @@ async def generate_mockup_with_gemini(payload: GenerateMockupIn) -> GeneratedMoc
                     "Gemini returned invalid mockup JSON",
                 ) from exc
 
-        await asyncio.sleep(0.5 * attempt)
+        await asyncio.sleep(1.5 * attempt)
 
     raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Gemini mockup generation failed")
 
@@ -302,6 +303,6 @@ async def generate_task_with_gemini(payload: GenerateTaskIn) -> GeneratedTasksOu
                     "Gemini returned invalid task JSON",
                 ) from exc
 
-        await asyncio.sleep(0.5 * attempt)
+        await asyncio.sleep(1.5 * attempt)
 
     raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Gemini task generation failed")

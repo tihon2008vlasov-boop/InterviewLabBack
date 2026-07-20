@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
+    gemini_generation_model: str = "gemini-3.1-flash-lite"
 
 
 @lru_cache
