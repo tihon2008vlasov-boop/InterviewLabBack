@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, status
 
+from app.core.lookup import get_or_none
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.company import Company
 from app.models.user import User
@@ -45,7 +46,7 @@ async def login(payload: LoginIn) -> TokenOut:
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
 
-    company = await Company.get(user.company_id)
+    company = await get_or_none(Company, user.company_id)
     return TokenOut(
         token=create_access_token(str(user.id), user.role),
         user=to_user_out(user, company.name if company else ""),

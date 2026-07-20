@@ -55,6 +55,7 @@ class SessionEventsIn(BaseModel):
     progress_pct: int | None = None
     camera_on: bool | None = None
     tab_switches: int | None = None
+    paste_events: int | None = None
     replay_events: list[ReplayEventIn] = Field(default_factory=list)
 
 
@@ -80,4 +81,5 @@ class LiveSessionOut(BaseModel):
     current_task: str
     current_action: str
     tab_switches: int
+    paste_events: int
     camera_on: bool

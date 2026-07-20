@@ -8,9 +8,11 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.core.lookup import get_or_none
 from app.core.config import settings
 from app.models.candidate import AIRecommendation, AIReport, ActivityEvent, Candidate
 from app.models.test import Test
+from app.services.typing_forensics import analyze_typing
 
 logger = logging.getLogger(__name__)
 MAX_SOLUTION_CHARS = 40_000
@@ -86,10 +88,26 @@ def _response_schema() -> dict:
                             ],
                         },
                     },
+                    "authenticity": {
+                        "type": "object",
+                        "properties": {
+                            "verdict": {
+                                "type": "string",
+                                "enum": ["typed", "mixed", "likely_pasted", "no_data"],
+                            },
+                            "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+                            "summary": {"type": "string"},
+                            "signals": {"type": "array", "items": {"type": "string"}},
+                            "interview_questions": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": [
+                            "verdict", "confidence", "summary", "signals", "interview_questions",
+                        ],
+                    },
                 },
                 "required": [
                     "summary", "strengths", "weaknesses", "verdict", "skills",
-                    "task_scores", "code_findings",
+                    "task_scores", "code_findings", "authenticity",
                 ],
             },
         },
@@ -138,13 +156,29 @@ def _solution_text(candidate: Candidate) -> str:
 def _request_analysis(candidate: Candidate, test: Test) -> AnalysisResult:
     model = quote(settings.gemini_model, safe="")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    forensics = analyze_typing(candidate)
     prompt = (
         "Ты старший технический интервьюер. Проведи статический анализ решений кандидата на "
         "русском языке. Сопоставь каждый файл с соответствующим заданием по номеру. Не утверждай, "
         "что код запускался: интерпретатор не используется. Оцени полноту, корректность, качество, "
         "безопасность и соответствие уровню. Для каждой конкретной проблемы укажи существующий "
         "файл и точные строки. Не создавай findings без уверенности. Максимум 20 findings.\n\n"
-        f"TEST: {test.name}\nLEVEL: {test.level}\nSTACK: {test.language}\n\n"
+        "ОТДЕЛЬНО заполни блок authenticity — самостоятельность работы. Опирайся на PROCESS "
+        "EVIDENCE (как код появлялся в редакторе) и на признаки в самом коде: избыточные "
+        "комментарии к очевидным строкам, неиспользуемые импорты и переменные, обработка "
+        "несуществующих кейсов, стиль не по заданию, решение шире требований, англоязычные "
+        "комментарии при русском задании, идеально ровное форматирование без следов правок.\n"
+        "Правила вывода: verdict=typed — код набирали руками; mixed — часть вставлена "
+        "(шаблон, сниппет); likely_pasted — решение вставлено целиком, вероятно из чата с ИИ; "
+        "no_data — снимков процесса нет. confidence — насколько ты уверен (0-100). "
+        "В signals перечисли конкретные наблюдения с числами и именами файлов, без домыслов. "
+        "В interview_questions дай 3-5 вопросов по этому коду, которые отличат автора от того, "
+        "кто вставил чужое решение. Вставленный код НЕ снижает score за качество — оценку "
+        "качества и самостоятельность держи раздельно.\n\n"
+        f"TEST: {test.name}\nLEVEL: {test.level}\nSTACK: {test.language}\n"
+        f"Время на тест: {test.duration_min} мин, кандидат затратил: "
+        f"{(candidate.duration_sec or 0) // 60} мин\n\n"
+        f"{forensics.as_prompt_block()}\n\n"
         f"ASSIGNMENTS:\n{_task_text(test)}\n\nSOLUTIONS:\n{_solution_text(candidate)}"
     )
     body = {
@@ -183,8 +217,8 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str) -> None:
         logger.error("Candidate analysis skipped: GEMINI_API_KEY is not configured")
         return
 
-    candidate = await Candidate.get(candidate_id)
-    test = await Test.get(test_id)
+    candidate = await get_or_none(Candidate, candidate_id)
+    test = await get_or_none(Test, test_id)
     if candidate is None or test is None or not candidate.submitted_files:
         return
     if candidate.status != "completed" or candidate.score is not None:

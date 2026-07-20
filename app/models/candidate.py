@@ -30,6 +30,14 @@ class CodeFinding(BaseModel):
     suggestion: str = ""
 
 
+class Authenticity(BaseModel):
+    verdict: Literal["typed", "mixed", "likely_pasted", "no_data"] = "no_data"
+    confidence: int = Field(default=0, ge=0, le=100)
+    summary: str = ""
+    signals: list[str] = Field(default_factory=list)
+    interview_questions: list[str] = Field(default_factory=list)
+
+
 class AIReport(BaseModel):
     summary: str = ""
     strengths: list[str] = Field(default_factory=list)
@@ -38,6 +46,7 @@ class AIReport(BaseModel):
     skills: list[SkillScore] = Field(default_factory=list)
     task_scores: list[TaskScore] = Field(default_factory=list)
     code_findings: list[CodeFinding] = Field(default_factory=list)
+    authenticity: Authenticity = Field(default_factory=Authenticity)
 
 
 class SubmittedFile(BaseModel):

@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
+from app.core.lookup import get_or_none
 from app.core.security import get_current_user_id
 from app.models.candidate import ActivityEvent, Candidate, ReplayEvent
 from app.models.session import Session
@@ -29,7 +30,7 @@ def as_utc(value: datetime) -> datetime:
 
 
 async def get_session_or_404(session_id: str) -> Session:
-    session = await Session.get(session_id)
+    session = await get_or_none(Session, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     return session
@@ -39,7 +40,7 @@ async def get_session_or_404(session_id: str) -> Session:
 async def list_live_sessions(
     user_id: str = Depends(get_current_user_id),
 ) -> list[LiveSessionOut]:
-    user = await User.get(user_id)
+    user = await get_or_none(User, user_id)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
 
@@ -53,8 +54,8 @@ async def list_live_sessions(
     )
     result: list[LiveSessionOut] = []
     for session in sessions:
-        candidate = await Candidate.get(session.candidate_id)
-        test = await Test.get(session.test_id)
+        candidate = await get_or_none(Candidate, session.candidate_id)
+        test = await get_or_none(Test, session.test_id)
         if candidate is None or test is None or candidate.status != "in_progress":
             continue
         started = as_utc(session.started_at)
@@ -75,6 +76,7 @@ async def list_live_sessions(
                 current_task=session.current_task,
                 current_action=session.current_action,
                 tab_switches=session.tab_switches,
+                paste_events=session.paste_events,
                 camera_on=session.camera_on,
             )
         )
@@ -139,18 +141,22 @@ async def ingest_events(session_id: str, payload: SessionEventsIn) -> dict:
     if session.ended_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Session is already finished")
 
-    for field in ("stage", "current_task", "current_action", "progress_pct", "camera_on", "tab_switches"):
+    for field in (
+        "stage", "current_task", "current_action", "progress_pct",
+        "camera_on", "tab_switches", "paste_events",
+    ):
         value = getattr(payload, field)
         if value is not None:
             setattr(session, field, value)
     session.last_seen_at = now()
     await session.save()
 
-    if payload.replay_events:
-        candidate = await Candidate.get(session.candidate_id)
-        if candidate:
-            candidate.replay.extend(ReplayEvent(**e.model_dump()) for e in payload.replay_events)
-            await candidate.save()
+    candidate = await get_or_none(Candidate, session.candidate_id)
+    if candidate:
+        candidate.integrity.tab_switches = session.tab_switches
+        candidate.integrity.paste_events = session.paste_events
+        candidate.replay.extend(ReplayEvent(**e.model_dump()) for e in payload.replay_events)
+        await candidate.save()
 
     return {"ok": True}
 
@@ -170,7 +176,7 @@ async def submit_session(
     session.last_seen_at = now()
     await session.save()
 
-    candidate = await Candidate.get(session.candidate_id)
+    candidate = await get_or_none(Candidate, session.candidate_id)
     if candidate:
         candidate.status = "completed"
         if candidate.score is None:

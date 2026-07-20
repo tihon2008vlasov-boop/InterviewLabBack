@@ -3,7 +3,9 @@ from datetime import datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 
+from app.core.lookup import get_or_none
 from app.core.security import get_current_user_id
+from app.core.tenant import current_company_id
 from app.models.candidate import Candidate
 from app.models.invitation import Invitation
 from app.models.session import Session
@@ -27,6 +29,8 @@ LANGUAGE_LABELS = {
     "php": "PHP",
 }
 
+LIVE_SESSION_TIMEOUT_SEC = 45
+
 
 def as_utc(value: datetime | None) -> datetime | None:
     if value is None:
@@ -35,38 +39,69 @@ def as_utc(value: datetime | None) -> datetime | None:
 
 
 @router.get("/dashboard")
-async def dashboard_stats() -> dict:
+async def dashboard_stats(company_id: str = Depends(current_company_id)) -> dict:
     now = datetime.now(timezone.utc)
     start_of_day = datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
+    start_of_yesterday = start_of_day - timedelta(days=1)
     week_ago = now - timedelta(days=7)
+    two_weeks_ago = now - timedelta(days=14)
 
-    active_tests = await Test.find(Test.status == "active").count()
-    in_progress_now = await Session.find(Session.ended_at == None).count()  # noqa: E711
-    completed_today = await Candidate.find(Candidate.completed_at >= start_of_day).count()
+    active_tests = await Test.find(
+        Test.company_id == company_id, Test.status == "active"
+    ).count()
+    # Тот же порог свежести, что и в списке live-сессий, иначе счётчик
+    # показывает брошенные сессии, которых на странице Live уже нет.
+    in_progress_now = await Session.find(
+        Session.company_id == company_id,
+        Session.ended_at == None,  # noqa: E711
+        Session.last_seen_at >= now - timedelta(seconds=LIVE_SESSION_TIMEOUT_SEC),
+    ).count()
+    completed_today = await Candidate.find(
+        Candidate.company_id == company_id, Candidate.completed_at >= start_of_day
+    ).count()
+    completed_yesterday = await Candidate.find(
+        Candidate.company_id == company_id,
+        Candidate.completed_at >= start_of_yesterday,
+        Candidate.completed_at < start_of_day,
+    ).count()
 
-    recent_scored = await Candidate.find(
-        Candidate.completed_at >= week_ago, Candidate.score != None  # noqa: E711
+    def average(items: list[Candidate]) -> int:
+        return round(sum(c.score or 0 for c in items) / len(items)) if items else 0
+
+    scored_this_week = await Candidate.find(
+        Candidate.company_id == company_id,
+        Candidate.completed_at >= week_ago,
+        Candidate.score != None,  # noqa: E711
     ).to_list()
-    avg_score_week = (
-        round(sum(c.score or 0 for c in recent_scored) / len(recent_scored))
-        if recent_scored
-        else 0
-    )
+    scored_prev_week = await Candidate.find(
+        Candidate.company_id == company_id,
+        Candidate.completed_at >= two_weeks_ago,
+        Candidate.completed_at < week_ago,
+        Candidate.score != None,  # noqa: E711
+    ).to_list()
+
+    avg_score_week = average(scored_this_week)
+    avg_score_prev_week = average(scored_prev_week)
 
     return {
         "active_tests": active_tests,
         "in_progress_now": in_progress_now,
         "completed_today": completed_today,
+        "completed_today_delta": completed_today - completed_yesterday,
         "avg_score_week": avg_score_week,
+        # Дельта имеет смысл только когда есть с чем сравнивать.
+        "avg_score_delta": (
+            avg_score_week - avg_score_prev_week if scored_prev_week and scored_this_week else None
+        ),
     }
 
 
 @router.get("/overview")
-async def analytics_overview() -> dict:
+async def analytics_overview(company_id: str = Depends(current_company_id)) -> dict:
     now = datetime.now(timezone.utc)
-    candidates = await Candidate.find_all().to_list()
-    tests = await Test.find_all().to_list()
-    invitations_count = await Invitation.count()
+    candidates = await Candidate.find(Candidate.company_id == company_id).to_list()
+    tests = await Test.find(Test.company_id == company_id).to_list()
+    invitations_count = await Invitation.find(Invitation.company_id == company_id).count()
 
     completed = [c for c in candidates if c.completed_at]
     scored = [c for c in completed if c.score is not None]
@@ -141,9 +176,16 @@ async def analytics_overview() -> dict:
 
 
 @router.get("/recent-invitations")
-async def recent_invitations() -> list[dict]:
-    invitations = await Invitation.find_all().sort(-Invitation.sent_at).limit(8).to_list()
-    tests = {str(t.id): t.name for t in await Test.find_all().to_list()}
+async def recent_invitations(company_id: str = Depends(current_company_id)) -> list[dict]:
+    invitations = (
+        await Invitation.find(Invitation.company_id == company_id)
+        .sort(-Invitation.sent_at)
+        .limit(8)
+        .to_list()
+    )
+    tests = {
+        str(t.id): t.name for t in await Test.find(Test.company_id == company_id).to_list()
+    }
     return [
         {
             "id": str(i.id),
@@ -158,12 +200,17 @@ async def recent_invitations() -> list[dict]:
 
 
 @router.get("/notifications")
-async def notifications() -> list[dict]:
+async def notifications(company_id: str = Depends(current_company_id)) -> list[dict]:
     items: list[dict] = []
-    tests = {str(t.id): t.name for t in await Test.find_all().to_list()}
+    tests = {
+        str(t.id): t.name for t in await Test.find(Test.company_id == company_id).to_list()
+    }
 
     recent_completed = (
-        await Candidate.find(Candidate.completed_at != None)  # noqa: E711
+        await Candidate.find(
+            Candidate.company_id == company_id,
+            Candidate.completed_at != None,  # noqa: E711
+        )
         .sort(-Candidate.completed_at)
         .limit(4)
         .to_list()
@@ -180,9 +227,17 @@ async def notifications() -> list[dict]:
             }
         )
 
-    live = await Session.find(Session.ended_at == None).sort(-Session.started_at).limit(3).to_list()  # noqa: E711
+    live = (
+        await Session.find(
+            Session.company_id == company_id,
+            Session.ended_at == None,  # noqa: E711
+        )
+        .sort(-Session.started_at)
+        .limit(3)
+        .to_list()
+    )
     for s in live:
-        candidate = await Candidate.get(s.candidate_id)
+        candidate = await get_or_none(Candidate, s.candidate_id)
         if candidate:
             items.append(
                 {
@@ -194,7 +249,12 @@ async def notifications() -> list[dict]:
                 }
             )
 
-    recent_invites = await Invitation.find_all().sort(-Invitation.sent_at).limit(3).to_list()
+    recent_invites = (
+        await Invitation.find(Invitation.company_id == company_id)
+        .sort(-Invitation.sent_at)
+        .limit(3)
+        .to_list()
+    )
     for i in recent_invites:
         items.append(
             {

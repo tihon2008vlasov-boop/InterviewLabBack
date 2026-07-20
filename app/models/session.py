@@ -16,6 +16,7 @@ class Session(Document):
     current_action: str = ""
     progress_pct: int = 0
     tab_switches: int = 0
+    paste_events: int = 0
     camera_on: bool = False
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_seen_at: datetime | None = None

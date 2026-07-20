@@ -4,7 +4,9 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.core.lookup import get_or_none
 from app.core.security import get_current_user_id
+from app.core.tenant import current_company_id
 from app.models.candidate import ActivityEvent, Candidate, CandidateStatus
 from app.models.company import Company
 from app.models.test import Test
@@ -21,15 +23,16 @@ class StatusIn(BaseModel):
     status: CandidateStatus
 
 
-async def get_candidate_or_404(candidate_id: str) -> Candidate:
-    candidate = await Candidate.get(candidate_id)
-    if candidate is None:
+async def get_candidate_or_404(candidate_id: str, company_id: str | None = None) -> Candidate:
+    candidate = await get_or_none(Candidate, candidate_id)
+    # Чужого кандидата не отличаем от несуществующего.
+    if candidate is None or (company_id is not None and candidate.company_id != company_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found")
     return candidate
 
 
 async def candidate_out(candidate: Candidate) -> dict:
-    test = await Test.get(candidate.test_id)
+    test = await get_or_none(Test, candidate.test_id)
     data = candidate.model_dump(mode="json", by_alias=True)
     data["_id"] = str(candidate.id)
     data["test_name"] = test.name if test else "Удалённый тест"
@@ -39,8 +42,12 @@ async def candidate_out(candidate: Candidate) -> dict:
 
 
 @router.get("/")
-async def list_candidates(status_filter: str | None = None, search: str | None = None) -> list[dict]:
-    query: dict = {}
+async def list_candidates(
+    status_filter: str | None = None,
+    search: str | None = None,
+    company_id: str = Depends(current_company_id),
+) -> list[dict]:
+    query: dict = {"company_id": company_id}
     if status_filter and status_filter != "all":
         query["status"] = status_filter
     if search:
@@ -54,21 +61,29 @@ async def list_candidates(status_filter: str | None = None, search: str | None =
 
 
 @router.get("/{candidate_id}")
-async def get_candidate(candidate_id: str) -> dict:
-    return await candidate_out(await get_candidate_or_404(candidate_id))
+async def get_candidate(candidate_id: str, company_id: str = Depends(current_company_id)) -> dict:
+    return await candidate_out(
+        await get_candidate_or_404(candidate_id, company_id)
+    )
 
 
 @router.patch("/{candidate_id}/status")
-async def update_status(candidate_id: str, payload: StatusIn) -> dict:
-    candidate = await get_candidate_or_404(candidate_id)
+async def update_status(
+    candidate_id: str, payload: StatusIn, company_id: str = Depends(current_company_id)
+) -> dict:
+    candidate = await get_candidate_or_404(candidate_id, company_id)
     candidate.status = payload.status
     await candidate.save()
     return await candidate_out(candidate)
 
 
 @router.post("/{candidate_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
-async def analyze_candidate(candidate_id: str, background_tasks: BackgroundTasks) -> dict:
-    candidate = await get_candidate_or_404(candidate_id)
+async def analyze_candidate(
+    candidate_id: str,
+    background_tasks: BackgroundTasks,
+    company_id: str = Depends(current_company_id),
+) -> dict:
+    candidate = await get_candidate_or_404(candidate_id, company_id)
     if candidate.status != "completed":
         raise HTTPException(status.HTTP_409_CONFLICT, "Candidate has not completed the test")
     if not candidate.submitted_files:
@@ -91,6 +106,12 @@ class SendResultsIn(BaseModel):
     decision: Literal["interview", "hired", "pending"] = "pending"
     subject: str = Field(default="", max_length=160)
     message: str = Field(default="", max_length=5000)
+    # Для приглашения на собеседование
+    meeting_url: str = Field(default="", max_length=500)
+    meeting_at: str = Field(default="", max_length=200)
+    # Для письма о найме
+    contact_name: str = Field(default="", max_length=200)
+    contact_details: str = Field(default="", max_length=1000)
 
 
 @router.post("/{candidate_id}/send-results")
@@ -100,14 +121,14 @@ async def send_candidate_results(
     user_id: str = Depends(get_current_user_id),
 ) -> dict:
     candidate = await get_candidate_or_404(candidate_id)
-    user = await User.get(user_id)
+    user = await get_or_none(User, user_id)
     if user is None or candidate.company_id != user.company_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found")
     if not candidate.completed_at:
         raise HTTPException(status.HTTP_409_CONFLICT, "Кандидат ещё не завершил тест")
 
-    test = await Test.get(candidate.test_id)
-    company = await Company.get(user.company_id)
+    test = await get_or_none(Test, candidate.test_id)
+    company = await get_or_none(Company, user.company_id)
     company_name = company.name if company else "InterviewLab"
     test_name = test.name if test else "Технический тест"
     subject, html = build_decision_email(
@@ -119,6 +140,10 @@ async def send_candidate_results(
         company_name,
         payload.subject,
         payload.message,
+        payload.meeting_url,
+        payload.meeting_at,
+        payload.contact_name,
+        payload.contact_details,
     )
     await send_email(
         candidate.email,
