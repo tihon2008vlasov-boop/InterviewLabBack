@@ -2,11 +2,13 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.security import get_current_user_id
 from app.models.candidate import ActivityEvent, Candidate, CandidateStatus
+from app.models.company import Company
 from app.models.test import Test
+from app.models.user import User
 from app.services.candidate_analysis import analyze_candidate_solution
 from app.services.emailer import build_decision_email, send_email
 
@@ -87,20 +89,44 @@ async def analyze_candidate(candidate_id: str, background_tasks: BackgroundTasks
 
 class SendResultsIn(BaseModel):
     decision: Literal["interview", "hired", "pending"] = "pending"
+    subject: str = Field(default="", max_length=160)
+    message: str = Field(default="", max_length=5000)
 
 
 @router.post("/{candidate_id}/send-results")
-async def send_candidate_results(candidate_id: str, payload: SendResultsIn) -> dict:
+async def send_candidate_results(
+    candidate_id: str,
+    payload: SendResultsIn,
+    user_id: str = Depends(get_current_user_id),
+) -> dict:
     candidate = await get_candidate_or_404(candidate_id)
+    user = await User.get(user_id)
+    if user is None or candidate.company_id != user.company_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found")
     if not candidate.completed_at:
         raise HTTPException(status.HTTP_409_CONFLICT, "Кандидат ещё не завершил тест")
 
     test = await Test.get(candidate.test_id)
+    company = await Company.get(user.company_id)
+    company_name = company.name if company else "InterviewLab"
     test_name = test.name if test else "Технический тест"
     subject, html = build_decision_email(
-        candidate.name, test_name, candidate.duration_sec, candidate.score, payload.decision
+        candidate.name,
+        test_name,
+        candidate.duration_sec,
+        candidate.score,
+        payload.decision,
+        company_name,
+        payload.subject,
+        payload.message,
     )
-    await send_email(candidate.email, f"{subject} — InterviewLab", html)
+    await send_email(
+        candidate.email,
+        f"{subject} — {company_name}",
+        html,
+        from_name=company_name,
+        reply_to=str(user.email),
+    )
 
     if payload.decision == "hired":
         candidate.status = "hired"
@@ -117,7 +143,7 @@ async def send_candidate_results(candidate_id: str, payload: SendResultsIn) -> d
             at=datetime.now(timezone.utc),
             kind="analyzed",
             label=labels[payload.decision],
-            detail=candidate.email,
+            detail=f"{candidate.email} · {subject}",
         )
     )
     await candidate.save()

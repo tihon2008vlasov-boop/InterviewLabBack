@@ -15,6 +15,7 @@ from app.models.test import Test
 logger = logging.getLogger(__name__)
 MAX_SOLUTION_CHARS = 40_000
 MAX_FILE_CHARS = 12_000
+MAX_ANALYSIS_ATTEMPTS = 3
 
 
 class AnalysisResult(BaseModel):
@@ -149,10 +150,10 @@ def _request_analysis(candidate: Candidate, test: Test) -> AnalysisResult:
     body = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": 10000,
+            "maxOutputTokens": 8000,
             "responseMimeType": "application/json",
             "responseJsonSchema": _response_schema(),
-            "thinkingConfig": {"thinkingLevel": "low"},
+            "thinkingConfig": {"thinkingLevel": "minimal"},
         },
     }
     request = Request(
@@ -168,7 +169,12 @@ def _request_analysis(candidate: Candidate, test: Test) -> AnalysisResult:
     )
     with urlopen(request, timeout=60) as response:
         data = json.loads(response.read().decode("utf-8"))
-    content = data["candidates"][0]["content"]["parts"][0]["text"]
+    candidate_data = data["candidates"][0]
+    content = candidate_data["content"]["parts"][0]["text"]
+    if not content.strip():
+        raise ValueError(
+            f"Gemini returned empty analysis (finishReason={candidate_data.get('finishReason')})"
+        )
     return AnalysisResult.model_validate_json(content)
 
 
@@ -188,7 +194,38 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str) -> None:
     await candidate.save()
 
     try:
-        result = await asyncio.to_thread(_request_analysis, candidate, test)
+        result: AnalysisResult | None = None
+        last_error: Exception | None = None
+        for attempt in range(1, MAX_ANALYSIS_ATTEMPTS + 1):
+            try:
+                result = await asyncio.to_thread(_request_analysis, candidate, test)
+                break
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                last_error = exc
+                logger.warning(
+                    "Candidate analysis HTTP error for %s on attempt %s/%s: %s",
+                    candidate_id,
+                    attempt,
+                    MAX_ANALYSIS_ATTEMPTS,
+                    detail[:4000],
+                )
+            except (URLError, KeyError, IndexError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+                last_error = exc
+                logger.warning(
+                    "Invalid candidate analysis for %s on attempt %s/%s: %s",
+                    candidate_id,
+                    attempt,
+                    MAX_ANALYSIS_ATTEMPTS,
+                    exc,
+                )
+
+            if attempt < MAX_ANALYSIS_ATTEMPTS:
+                await asyncio.sleep(attempt * 1.5)
+
+        if result is None:
+            raise RuntimeError("Gemini analysis failed after retries") from last_error
+
         candidate.score = result.score
         candidate.ai_recommendation = result.recommendation
         candidate.ai_report = result.report
@@ -203,7 +240,7 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str) -> None:
         )
         await candidate.save()
         logger.info("Candidate analysis completed for %s", candidate_id)
-    except (HTTPError, URLError, KeyError, IndexError, json.JSONDecodeError, ValidationError) as exc:
+    except Exception as exc:
         logger.exception("Candidate analysis failed for %s: %s", candidate_id, exc)
         candidate.analysis_status = "failed"
         await candidate.save()

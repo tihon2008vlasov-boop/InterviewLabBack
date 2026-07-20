@@ -2,8 +2,11 @@ import asyncio
 import logging
 import smtplib
 import ssl
+from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formataddr, parseaddr
+from html import escape
 
 from fastapi import HTTPException, status
 
@@ -40,6 +43,9 @@ def build_decision_email(
     duration_sec: int | None,
     score: int | None,
     decision: str,
+    company_name: str = "InterviewLab",
+    custom_subject: str = "",
+    custom_message: str = "",
 ) -> tuple[str, str]:
     content = DECISION_CONTENT.get(decision, DECISION_CONTENT["pending"])
     minutes = f"{duration_sec // 60} мин" if duration_sec else "—"
@@ -49,30 +55,45 @@ def build_decision_email(
         if score is not None
         else ""
     )
+    safe_candidate = escape(candidate_name)
+    safe_test = escape(test_name)
+    safe_company = escape(company_name or "InterviewLab")
+    message = (
+        escape(custom_message.strip()).replace("\n", "<br>")
+        if custom_message.strip()
+        else content["body"]
+    )
     html = f"""
 <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#09090b">
   <h2 style="margin:24px 0 4px">{content['heading']}</h2>
-  <p style="color:#6b6b74;margin:0 0 20px">Здравствуйте, {candidate_name}! {content['body']}</p>
+  <p style="color:#6b6b74;margin:0 0 12px">Здравствуйте, {safe_candidate}!</p>
+  <p style="color:#6b6b74;margin:0 0 20px;line-height:1.6">{message}</p>
   <table style="width:100%;border-top:1px solid #e6e6e9;border-bottom:1px solid #e6e6e9">
-    <tr><td style="padding:6px 0;color:#6b6b74">Тест</td><td style="padding:6px 0;font-weight:600">{test_name}</td></tr>
+    <tr><td style="padding:6px 0;color:#6b6b74">Тест</td><td style="padding:6px 0;font-weight:600">{safe_test}</td></tr>
     <tr><td style="padding:6px 0;color:#6b6b74">Затраченное время</td><td style="padding:6px 0;font-weight:600">{minutes}</td></tr>
     {score_row}
   </table>
-  <p style="color:#a1a1aa;font-size:12px;margin-top:20px">InterviewLab · AI-платформа технического найма</p>
+  <p style="color:#a1a1aa;font-size:12px;margin-top:20px">{safe_company} · отправлено через InterviewLab</p>
 </div>
 """
-    return content["subject"], html
+    subject = (custom_subject.strip() or content["subject"]).replace("\r", " ").replace("\n", " ")
+    return subject, html
 
 
 def smtp_configured() -> bool:
     return bool(settings.smtp_host and settings.smtp_user and settings.smtp_pass)
 
 
-def _send_sync(to: str, subject: str, html: str) -> None:
+def _send_sync(
+    to: str, subject: str, html: str, from_name: str = "InterviewLab", reply_to: str = ""
+) -> None:
     message = MIMEMultipart("alternative")
     message["Subject"] = subject
-    message["From"] = settings.email_from
+    from_address = parseaddr(settings.email_from)[1] or settings.smtp_user
+    message["From"] = formataddr((str(Header(from_name or "InterviewLab", "utf-8")), from_address))
     message["To"] = to
+    if reply_to:
+        message["Reply-To"] = reply_to
     message.attach(MIMEText(html, "html", "utf-8"))
 
     context = ssl.create_default_context()
@@ -87,14 +108,20 @@ def _send_sync(to: str, subject: str, html: str) -> None:
             server.sendmail(settings.smtp_user, [to], message.as_string())
 
 
-async def send_email(to: str, subject: str, html: str) -> None:
+async def send_email(
+    to: str,
+    subject: str,
+    html: str,
+    from_name: str = "InterviewLab",
+    reply_to: str = "",
+) -> None:
     if not smtp_configured():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Отправка почты не настроена: заполните SMTP_HOST, SMTP_USER и SMTP_PASS в backend/.env",
         )
     try:
-        await asyncio.to_thread(_send_sync, to, subject, html)
+        await asyncio.to_thread(_send_sync, to, subject, html, from_name, reply_to)
         logger.info("Email sent to %s: %s", to, subject)
     except smtplib.SMTPAuthenticationError as exc:
         logger.exception("SMTP auth failed")

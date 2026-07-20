@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
@@ -6,6 +6,7 @@ from app.core.security import get_current_user_id
 from app.models.candidate import ActivityEvent, Candidate, ReplayEvent
 from app.models.session import Session
 from app.models.test import Test
+from app.models.user import User
 from app.schemas.session import (
     LiveSessionOut,
     SessionEventsIn,
@@ -34,16 +35,27 @@ async def get_session_or_404(session_id: str) -> Session:
     return session
 
 
-@router.get("/", dependencies=[Depends(get_current_user_id)])
-async def list_live_sessions() -> list[LiveSessionOut]:
+@router.get("/")
+async def list_live_sessions(
+    user_id: str = Depends(get_current_user_id),
+) -> list[LiveSessionOut]:
+    user = await User.get(user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
+
+    active_after = now() - timedelta(seconds=45)
     sessions = (
-        await Session.find(Session.ended_at == None).sort(-Session.started_at).to_list()  # noqa: E711
+        await Session.find(
+            Session.company_id == user.company_id,
+            Session.ended_at == None,  # noqa: E711
+            Session.last_seen_at >= active_after,
+        ).sort(-Session.started_at).to_list()
     )
     result: list[LiveSessionOut] = []
     for session in sessions:
         candidate = await Candidate.get(session.candidate_id)
         test = await Test.get(session.test_id)
-        if candidate is None or test is None:
+        if candidate is None or test is None or candidate.status != "in_progress":
             continue
         started = as_utc(session.started_at)
         result.append(
@@ -107,6 +119,7 @@ async def start_session(code: str, payload: SessionStartIn) -> SessionStartOut:
             candidate_id=str(candidate.id),
             stage="hardware_check",
             current_action="Verifying camera and microphone",
+            last_seen_at=now(),
         )
     )
     return SessionStartOut(
@@ -130,6 +143,7 @@ async def ingest_events(session_id: str, payload: SessionEventsIn) -> dict:
         value = getattr(payload, field)
         if value is not None:
             setattr(session, field, value)
+    session.last_seen_at = now()
     await session.save()
 
     if payload.replay_events:
@@ -153,6 +167,7 @@ async def submit_session(
     session.ended_at = now()
     session.progress_pct = 100
     session.current_action = "Submitted"
+    session.last_seen_at = now()
     await session.save()
 
     candidate = await Candidate.get(session.candidate_id)
