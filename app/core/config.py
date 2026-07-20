@@ -20,6 +20,11 @@ class Settings(BaseSettings):
 
     invite_link_base_url: str = "http://localhost:5173/test"
 
+    recordings_dir: str = "./data/recordings"
+    recording_retention_days: int = 30
+    recording_max_bytes: int = 2_000_000_000
+    recording_max_chunk_bytes: int = 25_000_000
+
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""

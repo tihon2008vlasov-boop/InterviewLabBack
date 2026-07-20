@@ -71,10 +71,26 @@ class ActivityEvent(BaseModel):
     detail: str | None = None
 
 
+class ProctorIncident(BaseModel):
+    at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    kind: str
+    severity: Literal["info", "warning", "critical"] = "warning"
+    label: str
+    detail: str | None = None
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
 class Integrity(BaseModel):
     tab_switches: int = 0
     paste_events: int = 0
     camera_uptime: int = 100
+    phone_detections: int = 0
+    multiple_people: int = 0
+    face_absence_events: int = 0
+    identity_mismatches: int = 0
+    screen_share_interruptions: int = 0
+    proctor_risk_score: int = Field(default=0, ge=0, le=100)
+    proctor_events: list[ProctorIncident] = Field(default_factory=list)
 
 
 class Candidate(Document):

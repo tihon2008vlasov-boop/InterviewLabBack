@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
-from app.models.candidate import SubmittedFile
+from app.models.candidate import ProctorIncident, SubmittedFile
 from app.models.session import SessionStage
 from app.models.test import TestTask
 
@@ -11,6 +11,7 @@ class SessionStartIn(BaseModel):
     name: str = Field(min_length=2)
     email: EmailStr
     position: str = ""
+    proctoring_consent: bool = False
 
 
 class SessionTaskOut(BaseModel):
@@ -32,6 +33,7 @@ class SessionTaskOut(BaseModel):
 class SessionStartOut(BaseModel):
     session_id: str
     candidate_id: str
+    candidate_token: str
     test_id: str
     test_name: str
     duration_min: int
@@ -54,6 +56,7 @@ class SessionEventsIn(BaseModel):
     current_action: str | None = None
     progress_pct: int | None = None
     camera_on: bool | None = None
+    screen_on: bool | None = None
     tab_switches: int | None = None
     paste_events: int | None = None
     replay_events: list[ReplayEventIn] = Field(default_factory=list)
@@ -67,6 +70,7 @@ class SessionSubmitIn(BaseModel):
 
 class LiveSessionOut(BaseModel):
     id: str
+    candidate_id: str
     candidate_name: str
     candidate_email: str
     position: str
@@ -83,3 +87,8 @@ class LiveSessionOut(BaseModel):
     tab_switches: int
     paste_events: int
     camera_on: bool
+    screen_on: bool
+    proctoring_enabled: bool
+    proctor_risk_score: int
+    active_viewers: int
+    recent_proctor_events: list[ProctorIncident] = Field(default_factory=list)

@@ -9,6 +9,7 @@ from app.core.security import get_current_user_id
 from app.core.tenant import current_company_id
 from app.models.candidate import ActivityEvent, Candidate, CandidateStatus
 from app.models.company import Company
+from app.models.session import Session
 from app.models.test import Test
 from app.models.user import User
 from app.services.candidate_analysis import analyze_candidate_solution
@@ -31,13 +32,43 @@ async def get_candidate_or_404(candidate_id: str, company_id: str | None = None)
     return candidate
 
 
-async def candidate_out(candidate: Candidate) -> dict:
+async def candidate_out(candidate: Candidate, include_recording: bool = False) -> dict:
     test = await get_or_none(Test, candidate.test_id)
     data = candidate.model_dump(mode="json", by_alias=True)
     data["_id"] = str(candidate.id)
     data["test_name"] = test.name if test else "Удалённый тест"
     data["level"] = test.level if test else "middle"
     data["language"] = test.language if test else "javascript"
+    if include_recording:
+        session = await (
+            Session.find(Session.candidate_id == str(candidate.id))
+            .sort(-Session.started_at)
+            .first_or_none()
+        )
+        recording_ready = bool(
+            session
+            and session.recording_status == "ready"
+            and session.recording_path
+            and (
+                session.recording_expires_at is None
+                or (
+                    session.recording_expires_at
+                    if session.recording_expires_at.tzinfo
+                    else session.recording_expires_at.replace(tzinfo=timezone.utc)
+                ) > datetime.now(timezone.utc)
+            )
+        )
+        data["recording"] = {
+            "available": recording_ready,
+            "status": session.recording_status if session else "none",
+            "session_id": str(session.id) if session else "",
+            "mime_type": session.recording_mime_type if session else "",
+            "size_bytes": session.recording_size_bytes if session else 0,
+            "duration_sec": session.recording_duration_sec if session else 0,
+            "started_at": session.recording_started_at.isoformat() if session and session.recording_started_at else None,
+            "completed_at": session.recording_completed_at.isoformat() if session and session.recording_completed_at else None,
+            "expires_at": session.recording_expires_at.isoformat() if session and session.recording_expires_at else None,
+        }
     return data
 
 
@@ -63,7 +94,8 @@ async def list_candidates(
 @router.get("/{candidate_id}")
 async def get_candidate(candidate_id: str, company_id: str = Depends(current_company_id)) -> dict:
     return await candidate_out(
-        await get_candidate_or_404(candidate_id, company_id)
+        await get_candidate_or_404(candidate_id, company_id),
+        include_recording=True,
     )
 
 

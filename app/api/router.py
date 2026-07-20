@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import admin, ai, analytics, auth, candidates, sessions, tests
+from app.api.routes import admin, ai, analytics, auth, candidates, proctoring, sessions, tests
 
 api_router = APIRouter(prefix="/api")
 
@@ -11,6 +11,7 @@ api_router.include_router(sessions.router)
 api_router.include_router(analytics.router)
 api_router.include_router(admin.router)
 api_router.include_router(ai.router)
+api_router.include_router(proctoring.router)
 
 
 @api_router.get("/health", tags=["system"])

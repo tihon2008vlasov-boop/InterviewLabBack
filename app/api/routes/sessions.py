@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -17,6 +18,7 @@ from app.schemas.session import (
     SessionTaskOut,
 )
 from app.services.candidate_analysis import analyze_candidate_solution
+from app.services.proctoring import proctoring_hub
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -62,6 +64,7 @@ async def list_live_sessions(
         result.append(
             LiveSessionOut(
                 id=str(session.id),
+                candidate_id=str(candidate.id),
                 candidate_name=candidate.name,
                 candidate_email=candidate.email,
                 position=candidate.position,
@@ -78,6 +81,11 @@ async def list_live_sessions(
                 tab_switches=session.tab_switches,
                 paste_events=session.paste_events,
                 camera_on=session.camera_on,
+                screen_on=session.screen_on,
+                proctoring_enabled=session.proctoring_enabled,
+                proctor_risk_score=session.proctor_risk_score,
+                active_viewers=proctoring_hub.viewer_count(str(session.id)),
+                recent_proctor_events=session.proctor_events[-8:][::-1],
             )
         )
     return result
@@ -85,6 +93,11 @@ async def list_live_sessions(
 
 @router.post("/{code}/start", response_model=SessionStartOut, status_code=status.HTTP_201_CREATED)
 async def start_session(code: str, payload: SessionStartIn) -> SessionStartOut:
+    if not payload.proctoring_consent:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Proctoring consent is required to start this test",
+        )
     test = await Test.find_one({"links.code": code})
     if test is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invalid invite link")
@@ -121,12 +134,18 @@ async def start_session(code: str, payload: SessionStartIn) -> SessionStartOut:
             candidate_id=str(candidate.id),
             stage="hardware_check",
             current_action="Verifying camera and microphone",
+            camera_on=True,
+            screen_on=True,
+            proctoring_enabled=True,
+            proctoring_consent_at=now(),
+            proctor_token=secrets.token_urlsafe(32),
             last_seen_at=now(),
         )
     )
     return SessionStartOut(
         session_id=str(session.id),
         candidate_id=str(candidate.id),
+        candidate_token=session.proctor_token,
         test_id=str(test.id),
         test_name=test.name,
         duration_min=test.duration_min,
@@ -143,7 +162,7 @@ async def ingest_events(session_id: str, payload: SessionEventsIn) -> dict:
 
     for field in (
         "stage", "current_task", "current_action", "progress_pct",
-        "camera_on", "tab_switches", "paste_events",
+        "camera_on", "screen_on", "tab_switches", "paste_events",
     ):
         value = getattr(payload, field)
         if value is not None:
@@ -173,6 +192,8 @@ async def submit_session(
     session.ended_at = now()
     session.progress_pct = 100
     session.current_action = "Submitted"
+    session.camera_on = False
+    session.screen_on = False
     session.last_seen_at = now()
     await session.save()
 
