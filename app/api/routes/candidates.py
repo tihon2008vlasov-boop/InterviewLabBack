@@ -39,12 +39,65 @@ async def candidate_out(candidate: Candidate, include_recording: bool = False) -
     data["test_name"] = test.name if test else "Удалённый тест"
     data["level"] = test.level if test else "middle"
     data["language"] = test.language if test else "javascript"
+    report = data.get("ai_report", {})
+    integrity_assessment = report.get("integrity_assessment", {})
+    if (
+        candidate.score is not None
+        and report.get("technical_score") is None
+        and integrity_assessment.get("score") is None
+    ):
+        technical_score = candidate.score
+        integrity_score = max(0, 100 - candidate.integrity.proctor_risk_score)
+        overall_score = max(
+            0,
+            technical_score - round((100 - integrity_score) * 0.35),
+        )
+        if integrity_score < 20:
+            overall_score = min(overall_score, 49)
+        elif integrity_score < 40:
+            overall_score = min(overall_score, 59)
+        elif integrity_score < 60:
+            overall_score = min(overall_score, 69)
+        risk_level = (
+            "critical" if integrity_score < 35
+            else "high" if integrity_score < 60
+            else "medium" if integrity_score < 80
+            else "low"
+        )
+        report["technical_score"] = technical_score
+        integrity_assessment.update({
+            "score": integrity_score,
+            "risk_level": risk_level,
+            "summary": (
+                "Предварительная оценка по зафиксированным событиям прокторинга. "
+                "Запустите пересчёт AI-анализа для разбора реплея и конкретных сигналов."
+            ),
+        })
+        report["integrity_assessment"] = integrity_assessment
+        data["ai_report"] = report
+        data["score"] = overall_score
+        data["ai_recommendation"] = (
+            "strong_hire" if overall_score >= 85
+            else "hire" if overall_score >= 70
+            else "consider" if overall_score >= 50
+            else "reject"
+        )
     if include_recording:
         session = await (
             Session.find(Session.candidate_id == str(candidate.id))
             .sort(-Session.started_at)
             .first_or_none()
         )
+        if session:
+            origin = session.recording_started_at or session.started_at
+            if origin.tzinfo is None:
+                origin = origin.replace(tzinfo=timezone.utc)
+            for event in data.get("integrity", {}).get("proctor_events", []):
+                if event.get("at_sec") is None and event.get("at"):
+                    event_at = datetime.fromisoformat(str(event["at"]).replace("Z", "+00:00"))
+                    if event_at.tzinfo is None:
+                        event_at = event_at.replace(tzinfo=timezone.utc)
+                    event["at_sec"] = max(0, int((event_at - origin).total_seconds()))
         recording_ready = bool(
             session
             and session.recording_status == "ready"
@@ -113,6 +166,7 @@ async def update_status(
 async def analyze_candidate(
     candidate_id: str,
     background_tasks: BackgroundTasks,
+    force: bool = False,
     company_id: str = Depends(current_company_id),
 ) -> dict:
     candidate = await get_candidate_or_404(candidate_id, company_id)
@@ -120,7 +174,7 @@ async def analyze_candidate(
         raise HTTPException(status.HTTP_409_CONFLICT, "Candidate has not completed the test")
     if not candidate.submitted_files:
         raise HTTPException(status.HTTP_409_CONFLICT, "Candidate has not submitted a solution")
-    if candidate.score is not None or candidate.analysis_status == "completed":
+    if not force and (candidate.score is not None or candidate.analysis_status == "completed"):
         return {"ok": True, "message": "AI analysis already completed"}
     if candidate.analysis_status == "pending":
         return {"ok": True, "message": "AI analysis is already running"}
@@ -130,6 +184,7 @@ async def analyze_candidate(
         analyze_candidate_solution,
         str(candidate.id),
         candidate.test_id,
+        force,
     )
     return {"ok": True, "message": "AI analysis started"}
 

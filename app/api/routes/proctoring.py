@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Cookie, Depends, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Cookie, Depends, File, Form, Header, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from jose import JWTError, jwt
@@ -33,6 +33,7 @@ EVENT_META: dict[str, tuple[str, str, int]] = {
     "identity_mismatch": ("critical", "Лицо отличается от лица при старте", 28),
     "camera_stopped": ("critical", "Камера отключена", 20),
     "screen_share_stopped": ("critical", "Демонстрация экрана остановлена", 24),
+    "camera_obstructed": ("warning", "Камера закрыта или кадр слишком тёмный", 10),
     "tab_hidden": ("warning", "Кандидат покинул вкладку теста", 5),
 }
 
@@ -64,6 +65,30 @@ class RecordingCompleteIn(BaseModel):
     last_sequence: int = Field(ge=0, le=1_000_000)
     duration_sec: int = Field(ge=0, le=86_400)
     mime_type: str = Field(default="video/webm", max_length=120)
+
+
+class ProctorEventIn(BaseModel):
+    kind: str = Field(min_length=1, max_length=64)
+    severity: str = Field(default="warning", max_length=16)
+    detail: str | None = Field(default=None, max_length=500)
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+@router.post("/events/{session_id}")
+async def create_proctor_event(
+    session_id: str,
+    payload: ProctorEventIn,
+    candidate_token: str = Header(alias="X-Candidate-Token"),
+) -> dict:
+    await candidate_recording_session(session_id, candidate_token)
+    incident = await record_incident(session_id, payload.model_dump())
+    if incident is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unsupported proctor event")
+    await proctoring_hub.broadcast_viewers(
+        session_id,
+        {"type": "proctor_event", "event": incident.model_dump(mode="json")},
+    )
+    return {"ok": True, "event": incident.model_dump(mode="json")}
 
 
 @router.post("/recordings/{session_id}/start")
@@ -148,6 +173,7 @@ async def complete_recording(
 async def stream_recording(
     session_id: str,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    access_token: str | None = Query(default=None, max_length=1200),
     recording_access: str | None = Cookie(default=None, alias="proctor_recording_access"),
 ) -> FileResponse:
     session = await get_or_none(Session, session_id)
@@ -157,7 +183,18 @@ async def stream_recording(
             user_id = str(decode_access_token(credentials.credentials)["sub"])
         except (JWTError, KeyError, TypeError):
             pass
-    elif recording_access:
+    if not user_id and access_token:
+        try:
+            payload = jwt.decode(
+                access_token,
+                settings.jwt_secret,
+                algorithms=[settings.jwt_algorithm],
+            )
+            if payload.get("purpose") == "recording_playback" and payload.get("session_id") == session_id:
+                user_id = str(payload["sub"])
+        except (JWTError, KeyError, TypeError):
+            pass
+    if not user_id and recording_access:
         try:
             payload = jwt.decode(
                 recording_access,
@@ -208,7 +245,14 @@ async def create_playback_access(
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
-    response = JSONResponse({"ok": True, "expires_at": expires.isoformat()})
+    response = JSONResponse({
+        "ok": True,
+        "expires_at": expires.isoformat(),
+        "media_url": (
+            f"/proctoring/recordings/{session_id}/media"
+            f"?access_token={playback_token}"
+        ),
+    })
     response.set_cookie(
         key="proctor_recording_access",
         value=playback_token,
@@ -247,8 +291,13 @@ async def record_incident(session_id: str, raw: dict[str, Any]) -> ProctorIncide
         confidence = 0
     detail_raw = raw.get("detail")
     detail = str(detail_raw)[:500] if detail_raw else None
+    incident_at = now()
+    recording_origin = session.recording_started_at or session.started_at
+    if recording_origin.tzinfo is None:
+        recording_origin = recording_origin.replace(tzinfo=timezone.utc)
     incident = ProctorIncident(
-        at=now(),
+        at=incident_at,
+        at_sec=max(0, int((incident_at - recording_origin).total_seconds())),
         kind=kind,
         severity=severity,
         label=label,
@@ -279,6 +328,8 @@ async def record_incident(session_id: str, raw: dict[str, Any]) -> ProctorIncide
             integrity.identity_mismatches += 1
         elif kind == "screen_share_stopped":
             integrity.screen_share_interruptions += 1
+        elif kind == "camera_obstructed":
+            integrity.camera_obstructions += 1
         if severity != "info":
             candidate.activity = [
                 *candidate.activity[-499:],

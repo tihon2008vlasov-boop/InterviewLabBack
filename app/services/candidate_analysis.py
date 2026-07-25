@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.core.lookup import get_or_none
 from app.core.config import settings
 from app.models.candidate import AIRecommendation, AIReport, ActivityEvent, Candidate
+from app.models.session import Session
 from app.models.test import Test
 from app.services.typing_forensics import analyze_typing
 
@@ -21,7 +22,7 @@ MAX_ANALYSIS_ATTEMPTS = 3
 
 
 class AnalysisResult(BaseModel):
-    score: int = Field(ge=0, le=100)
+    technical_score: int = Field(ge=0, le=100)
     recommendation: AIRecommendation
     report: AIReport
 
@@ -30,7 +31,7 @@ def _response_schema() -> dict:
     return {
         "type": "object",
         "properties": {
-            "score": {"type": "integer", "minimum": 0, "maximum": 100},
+            "technical_score": {"type": "integer", "minimum": 0, "maximum": 100},
             "recommendation": {
                 "type": "string",
                 "enum": ["strong_hire", "hire", "consider", "reject"],
@@ -104,14 +105,51 @@ def _response_schema() -> dict:
                             "verdict", "confidence", "summary", "signals", "interview_questions",
                         ],
                     },
+                    "integrity_assessment": {
+                        "type": "object",
+                        "properties": {
+                            "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                            "risk_level": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high", "critical"],
+                            },
+                            "summary": {"type": "string"},
+                            "signals": {"type": "array", "items": {"type": "string"}},
+                            "review_moments": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "at_sec": {"type": "integer", "minimum": 0},
+                                        "source": {
+                                            "type": "string",
+                                            "enum": ["proctoring", "replay"],
+                                        },
+                                        "severity": {
+                                            "type": "string",
+                                            "enum": ["info", "warning", "critical"],
+                                        },
+                                        "title": {"type": "string"},
+                                        "explanation": {"type": "string"},
+                                    },
+                                    "required": [
+                                        "at_sec", "source", "severity", "title", "explanation",
+                                    ],
+                                },
+                            },
+                        },
+                        "required": [
+                            "score", "risk_level", "summary", "signals", "review_moments",
+                        ],
+                    },
                 },
                 "required": [
                     "summary", "strengths", "weaknesses", "verdict", "skills",
-                    "task_scores", "code_findings", "authenticity",
+                    "task_scores", "code_findings", "authenticity", "integrity_assessment",
                 ],
             },
         },
-        "required": ["score", "recommendation", "report"],
+        "required": ["technical_score", "recommendation", "report"],
     }
 
 
@@ -153,7 +191,86 @@ def _solution_text(candidate: Candidate) -> str:
     return "\n\n".join(chunks)
 
 
-def _request_analysis(candidate: Candidate, test: Test) -> AnalysisResult:
+def _replay_text(candidate: Candidate) -> str:
+    events = sorted(candidate.replay, key=lambda event: event.at_sec)
+    if not events:
+        return "CODE REPLAY TIMELINE: no events"
+    lines = ["CODE REPLAY TIMELINE (snapshots omitted because final files are supplied separately):"]
+    for event in events[-160:]:
+        file_part = f" file={event.file}" if event.file else ""
+        detail_part = f" detail={event.detail[:180]!r}" if event.detail else ""
+        lines.append(
+            f"- {event.at_sec}s kind={event.kind}{file_part} label={event.label!r}{detail_part}"
+        )
+    return "\n".join(lines)
+
+
+def _proctoring_text(candidate: Candidate, session: Session | None) -> str:
+    events = candidate.integrity.proctor_events
+    if not events:
+        return (
+            "PROCTORING EVIDENCE: no incidents recorded; "
+            f"backend risk score={candidate.integrity.proctor_risk_score}/100"
+        )
+
+    origin = None
+    if session is not None:
+        origin = session.recording_started_at or session.started_at
+        if origin.tzinfo is None:
+            origin = origin.replace(tzinfo=timezone.utc)
+
+    lines = [
+        "PROCTORING EVIDENCE (computer-vision signals require manual confirmation):",
+        f"- backend risk score={candidate.integrity.proctor_risk_score}/100",
+        (
+            "- counters: "
+            f"phone={candidate.integrity.phone_detections}, "
+            f"multiple_people={candidate.integrity.multiple_people}, "
+            f"face_absent={candidate.integrity.face_absence_events}, "
+            f"identity_mismatch={candidate.integrity.identity_mismatches}, "
+            f"screen_stopped={candidate.integrity.screen_share_interruptions}, "
+            f"camera_obstructed={candidate.integrity.camera_obstructions}, "
+            f"tab_switches={candidate.integrity.tab_switches}"
+        ),
+    ]
+    for event in events[-160:]:
+        at_sec = event.at_sec
+        if at_sec is None and origin is not None:
+            event_at = event.at
+            if event_at.tzinfo is None:
+                event_at = event_at.replace(tzinfo=timezone.utc)
+            at_sec = max(0, int((event_at - origin).total_seconds()))
+        lines.append(
+            f"- {at_sec or 0}s kind={event.kind} severity={event.severity} "
+            f"confidence={event.confidence}% label={event.label!r} "
+            f"detail={(event.detail or '')[:240]!r}"
+        )
+    return "\n".join(lines)
+
+
+def _overall_score(technical_score: int, integrity_score: int) -> int:
+    integrity_penalty = round((100 - integrity_score) * 0.35)
+    score = max(0, min(100, technical_score - integrity_penalty))
+    if integrity_score < 20:
+        return min(score, 49)
+    if integrity_score < 40:
+        return min(score, 59)
+    if integrity_score < 60:
+        return min(score, 69)
+    return score
+
+
+def _recommendation_for_score(score: int) -> AIRecommendation:
+    if score >= 85:
+        return "strong_hire"
+    if score >= 70:
+        return "hire"
+    if score >= 50:
+        return "consider"
+    return "reject"
+
+
+def _request_analysis(candidate: Candidate, test: Test, session: Session | None) -> AnalysisResult:
     model = quote(settings.gemini_model, safe="")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     forensics = analyze_typing(candidate)
@@ -173,12 +290,25 @@ def _request_analysis(candidate: Candidate, test: Test) -> AnalysisResult:
         "no_data — снимков процесса нет. confidence — насколько ты уверен (0-100). "
         "В signals перечисли конкретные наблюдения с числами и именами файлов, без домыслов. "
         "В interview_questions дай 3-5 вопросов по этому коду, которые отличат автора от того, "
-        "кто вставил чужое решение. Вставленный код НЕ снижает score за качество — оценку "
-        "качества и самостоятельность держи раздельно.\n\n"
+        "кто вставил чужое решение. Вставленный код НЕ снижает technical_score за качество — "
+        "оценку качества и самостоятельность держи раздельно.\n\n"
+        "ОБЯЗАТЕЛЬНО проанализируй PROCTORING EVIDENCE и CODE REPLAY TIMELINE. "
+        "В integrity_assessment.score поставь оценку надёжности прохождения: 100 означает, "
+        "что подозрительных сигналов нет, 0 — несколько сильных согласованных сигналов. "
+        "Не считай одиночное событие компьютерного зрения доказательством: учитывай confidence, "
+        "повторяемость, совпадение с уходами со вкладки, вставками и резкими изменениями кода. "
+        "В review_moments перечисли до 12 самых важных моментов с точным at_sec, чтобы HR мог "
+        "открыть запись или реплей на нужном месте. report.summary, report.verdict и recommendation "
+        "должны учитывать и качество решения, и надёжность процесса. technical_score оценивает "
+        "только решение. Общий балл сервер рассчитает как technical_score минус до 35 баллов "
+        "штрафа; при критически низкой надёжности общий результат дополнительно ограничивается "
+        "порогом ручной проверки.\n\n"
         f"TEST: {test.name}\nLEVEL: {test.level}\nSTACK: {test.language}\n"
         f"Время на тест: {test.duration_min} мин, кандидат затратил: "
         f"{(candidate.duration_sec or 0) // 60} мин\n\n"
         f"{forensics.as_prompt_block()}\n\n"
+        f"{_replay_text(candidate)}\n\n"
+        f"{_proctoring_text(candidate, session)}\n\n"
         f"ASSIGNMENTS:\n{_task_text(test)}\n\nSOLUTIONS:\n{_solution_text(candidate)}"
     )
     body = {
@@ -212,7 +342,7 @@ def _request_analysis(candidate: Candidate, test: Test) -> AnalysisResult:
     return AnalysisResult.model_validate_json(content)
 
 
-async def analyze_candidate_solution(candidate_id: str, test_id: str) -> None:
+async def analyze_candidate_solution(candidate_id: str, test_id: str, force: bool = False) -> None:
     if not settings.gemini_api_key:
         logger.error("Candidate analysis skipped: GEMINI_API_KEY is not configured")
         return
@@ -221,8 +351,13 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str) -> None:
     test = await get_or_none(Test, test_id)
     if candidate is None or test is None or not candidate.submitted_files:
         return
-    if candidate.status != "completed" or candidate.score is not None:
+    if candidate.status != "completed" or (candidate.score is not None and not force):
         return
+    session = await (
+        Session.find(Session.candidate_id == candidate_id)
+        .sort(-Session.started_at)
+        .first_or_none()
+    )
 
     candidate.analysis_status = "pending"
     await candidate.save()
@@ -232,7 +367,7 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str) -> None:
         last_error: Exception | None = None
         for attempt in range(1, MAX_ANALYSIS_ATTEMPTS + 1):
             try:
-                result = await asyncio.to_thread(_request_analysis, candidate, test)
+                result = await asyncio.to_thread(_request_analysis, candidate, test, session)
                 break
             except HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
@@ -260,8 +395,12 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str) -> None:
         if result is None:
             raise RuntimeError("Gemini analysis failed after retries") from last_error
 
-        candidate.score = result.score
-        candidate.ai_recommendation = result.recommendation
+        result.report.technical_score = result.technical_score
+        candidate.score = _overall_score(
+            result.technical_score,
+            result.report.integrity_assessment.score,
+        )
+        candidate.ai_recommendation = _recommendation_for_score(candidate.score)
         candidate.ai_report = result.report
         candidate.analysis_status = "completed"
         candidate.analyzed_at = datetime.now(timezone.utc)

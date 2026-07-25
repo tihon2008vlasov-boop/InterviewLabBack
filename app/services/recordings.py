@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -102,6 +103,7 @@ async def combine_chunks(
                 with chunk.open("rb") as source:
                     shutil.copyfileobj(source, output, length=1024 * 1024)
         temporary.replace(final_path)
+        _remux_with_duration(final_path)
         size = final_path.stat().st_size
         shutil.rmtree(chunks_dir, ignore_errors=True)
         return size
@@ -109,3 +111,41 @@ async def combine_chunks(
     size = await asyncio.to_thread(combine)
     relative_path = final_path.relative_to(recordings_root()).as_posix()
     return relative_path, size
+
+
+def _remux_with_duration(path: Path) -> bool:
+    """Rebuild the WebM/MP4 index after concatenating MediaRecorder chunks."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        print(f"[recordings] WARNING: ffmpeg not found, cannot index {path.name}")
+        return False
+
+    temporary = path.with_name(f"{path.stem}.indexed{path.suffix}")
+    command = [
+        ffmpeg,
+        "-y",
+        "-v",
+        "error",
+        "-fflags",
+        "+genpts",
+        "-i",
+        str(path),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+    ]
+    if path.suffix.lower() == ".mp4":
+        command.extend(["-movflags", "+faststart"])
+    command.append(str(temporary))
+    result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+    if result.returncode != 0 or not temporary.is_file() or temporary.stat().st_size == 0:
+        temporary.unlink(missing_ok=True)
+        print(f"[recordings] WARNING: remux failed for {path.name}: {result.stderr[-500:]}")
+        return False
+    temporary.replace(path)
+    return True
+
+
+async def repair_recording(path: Path) -> bool:
+    return await asyncio.to_thread(_remux_with_duration, path)

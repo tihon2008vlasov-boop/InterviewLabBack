@@ -38,15 +38,33 @@ class Authenticity(BaseModel):
     interview_questions: list[str] = Field(default_factory=list)
 
 
+class ReviewMoment(BaseModel):
+    at_sec: int = Field(default=0, ge=0)
+    source: Literal["proctoring", "replay"]
+    severity: Literal["info", "warning", "critical"] = "warning"
+    title: str
+    explanation: str = ""
+
+
+class IntegrityAssessment(BaseModel):
+    score: int | None = Field(default=None, ge=0, le=100)
+    risk_level: Literal["low", "medium", "high", "critical"] = "low"
+    summary: str = ""
+    signals: list[str] = Field(default_factory=list)
+    review_moments: list[ReviewMoment] = Field(default_factory=list)
+
+
 class AIReport(BaseModel):
     summary: str = ""
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
     verdict: str = ""
+    technical_score: int | None = Field(default=None, ge=0, le=100)
     skills: list[SkillScore] = Field(default_factory=list)
     task_scores: list[TaskScore] = Field(default_factory=list)
     code_findings: list[CodeFinding] = Field(default_factory=list)
     authenticity: Authenticity = Field(default_factory=Authenticity)
+    integrity_assessment: IntegrityAssessment = Field(default_factory=IntegrityAssessment)
 
 
 class SubmittedFile(BaseModel):
@@ -73,6 +91,7 @@ class ActivityEvent(BaseModel):
 
 class ProctorIncident(BaseModel):
     at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    at_sec: int | None = Field(default=None, ge=0)
     kind: str
     severity: Literal["info", "warning", "critical"] = "warning"
     label: str
@@ -89,6 +108,7 @@ class Integrity(BaseModel):
     face_absence_events: int = 0
     identity_mismatches: int = 0
     screen_share_interruptions: int = 0
+    camera_obstructions: int = 0
     proctor_risk_score: int = Field(default=0, ge=0, le=100)
     proctor_events: list[ProctorIncident] = Field(default_factory=list)
 
