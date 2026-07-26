@@ -61,7 +61,21 @@ INVITE_LINK_BASE_URL=http://localhost:5173/test
 
 Секретов тут нет: `localhost:27017` — это адрес MongoDB **на твоём же компьютере**.
 Этот env одинаковый у всех, но базу он не «расшаривает» — у каждого своя (см. ниже).
-Полный список переменных SMTP, Gemini и хранения записей — в `.env.example`.
+
+`CLIENT_URL` — единственный origin, разрешённый в CORS. Если фронт запущен не на
+`localhost:5173` (например, через `--host` или ngrok), этот адрес надо поменять, иначе
+браузер заблокирует запросы.
+
+Полный список переменных — в `.env.example`. Что важно знать:
+
+| Переменная | Зачем |
+|---|---|
+| `GEMINI_API_KEY` | **единственный AI-ключ в проекте**: генерация заданий, макетов, анализ кандидата |
+| `GEMINI_MODEL` / `GEMINI_GENERATION_MODEL` | модели для анализа и для генерации заданий |
+| `SMTP_*`, `EMAIL_FROM` | реальная отправка приглашений и решений; без них отправка вернёт ошибку |
+| `RECORDINGS_DIR` | куда складывать записи сессий (по умолчанию `./data/recordings`) |
+| `RECORDING_RETENTION_DAYS` | через сколько дней запись удаляется фоновой задачей (30) |
+| `RECORDING_MAX_BYTES` / `RECORDING_MAX_CHUNK_BYTES` | лимиты на размер записи (2 ГБ) и чанка (25 МБ) |
 
 ## MongoDB
 
@@ -133,15 +147,13 @@ app/
     proctoring.py          # запись инцидентов прокторинга, уровень риска
     recordings.py          # чанки записи, склейка, ffmpeg-индексация, ретеншен
     emailer.py             # SMTP: приглашения и письма с решением
-    groq.py                # не подключён к роутам (задел)
   api/
     router.py              # сборка /api
     routes/                # auth, tests, task_library, candidates, sessions,
-                           # analytics, admin, ai, proctoring
+                           # analytics, admin, ai, proctoring, settings
   scripts/
-    seed_task_library.py       # наполнить библиотеку заданий из task_catalog
-    backfill_proctor_timecodes.py  # проставить таймкоды инцидентам старых сессий
-    repair_recordings.py       # пересобрать/починить записи сессий
+    seed_task_library.py   # наполнить библиотеку заданий из task_catalog
+    repair_recordings.py   # пересобрать/починить записи сессий
 ```
 
 ## API
@@ -183,9 +195,20 @@ app/
 - `GET /recordings/{session_id}/media` — отдача записи (с поддержкой Range)
 - `POST /recordings/{session_id}/playback-access` — токен на просмотр
 
+**Настройки** `/api/settings`
+- `GET ""` — профиль, компания и настройки уведомлений одним ответом
+- `PATCH /profile` — имя, email, аватар (`avatar_url`, приходит data URL)
+- `PATCH /company` — название, сайт, логотип
+- `PATCH /notifications` — тумблеры `candidate_completed`, `weekly_report`,
+  `ai_analysis`, `team_activity`, `product_updates` (хранятся в `User.notification_preferences`)
+- `POST /password` — смена пароля с проверкой текущего, `204`
+- `POST /api-key` — выпуск нового ключа компании; **полный ключ отдаётся один раз**,
+  в БД остаются только sha256-хэш и префикс. Доступно ролям `owner` и `admin`
+- `DELETE /api-key` — отзыв ключа, `204`
+
 **Аналитика и прочее**
 - `GET /api/analytics/dashboard`, `/overview`, `/recent-invitations`, `/notifications`
-- `GET /api/team` — участники компании
+- `GET /api/team` — участники компании · `POST /api/team` — добавить участника
 - `POST /api/ai/tasks/generate`, `POST /api/ai/tasks/mockup` — генерация на Gemini
 - `GET /api/health`
 
@@ -195,11 +218,12 @@ app/
   сессия стартует только с `proctoring_consent=true`.
 - Видео и аудио идут **peer-to-peer через WebRTC**, backend работает только как signaling —
   поток через сервер не проксируется.
-- Компьютерное зрение крутится **в браузере кандидата** (TensorFlow.js). На сервер уходит
-  только текстовый журнал: `phone_detected`, `multiple_people`, `face_missing`,
-  `identity_mismatch`, `looking_away`, `tab_hidden`, `camera_stopped`, `camera_obstructed`,
-  `screen_share_stopped`, `paste` и т.д. По ним считается `risk_level`
-  (`low` / `medium` / `high` / `critical`).
+- Компьютерное зрение и распознавание речи крутятся **в браузере кандидата**
+  (TensorFlow.js и Web Speech API). На сервер уходит только текстовый журнал:
+  `phone_detected`, `multiple_people`, `face_missing`, `identity_mismatch`,
+  `looking_away`, `speech_detected`, `sustained_audio`, `tab_hidden`, `camera_stopped`,
+  `camera_obstructed`, `screen_share_stopped`, `paste` и т.д. По ним считается
+  `risk_level` (`low` / `medium` / `high` / `critical`).
 - Параллельно браузер пишет композит «экран + камера» через `MediaRecorder` и шлёт
   чанками на `/recordings/...`. Файлы лежат в `RECORDINGS_DIR`, старше
   `RECORDING_RETENTION_DAYS` удаляются фоновой задачей (проверка раз в час).
@@ -213,15 +237,12 @@ app/
 - `POST /auth/reset-password` — единственная 501-заглушка. Плюс `forgot-password` ничего
   не отправляет, так что восстановление пароля не работает end-to-end: фронтовая страница
   `/reset-password` существует и шлёт запрос, но получает 501.
-- **Нет ручек под страницу настроек**: профиль, данные компании, 2FA, API-ключи,
-  приглашение коллеги в команду. Есть только `GET /api/team` на чтение — поэтому
-  `SettingsPage` на фронте показывает успех, ничего не сохраняя (см. frontend/README.md).
-- Загрузка файлов в S3 не реализована. Переменные `S3_*` есть **только в `.env.example`**:
-  в `config.py` таких полей нет, а `extra="ignore"` их молча выбрасывает — задать их
-  в `.env` можно, эффекта не будет. Записи сессий пишутся на локальный диск
-  (`RECORDINGS_DIR`), поэтому на хостинге с эфемерной ФС они пропадут при редеплое.
-- `groq.py` написан, но ни к одному роуту не подключён
-- `ANTHROPIC_API_KEY` / `AI_MODEL` объявлены в `config.py`, но нигде не читаются
+- **Объектного хранилища нет.** Записи сессий пишутся на локальный диск (`RECORDINGS_DIR`),
+  аватары и логотипы хранятся прямо в БД как data URL. На хостинге с эфемерной ФС
+  (Railway, Render, Heroku) записи пропадут при первом же редеплое — под прод нужен S3
+  или примонтированный том.
+- Выпущенный API-ключ компании нигде не проверяется: `POST /settings/api-key` его
+  генерирует и хранит хэш, но ни один эндпоинт не аутентифицирует по нему запросы.
 
 ## Соглашения
 
