@@ -1,33 +1,43 @@
 # InterviewLab Backend (FastAPI + MongoDB)
 
-Каркас API для платформы технического скрининга. Фронтенд сейчас работает на моках —
-этот сервис задаёт структуру, которую команда дорабатывает и подключает к фронту.
+API платформы технического скрининга: тесты и задания, инвайт-ссылки, прохождение
+кандидатом, live-прокторинг с записью сессии, AI-генерация заданий и AI-анализ решений.
+
+Фронтенд ([InterviewLabFront](https://github.com/tihon2008vlasov-boop/InterviewLabFront))
+работает **только** с этим сервисом — режима моков у него больше нет.
 
 ## Стек
 
-- **FastAPI** — HTTP API, автодокументация на `/docs`
+- **FastAPI** — HTTP API + WebSocket, автодокументация на `/docs`
 - **MongoDB + Beanie (Motor)** — асинхронная ODM
-- **JWT (python-jose) + passlib/bcrypt** — авторизация
-- **Pydantic v2** — валидация и настройки из `.env`
+- **JWT (python-jose) + bcrypt** — авторизация
+- **Pydantic v2 / pydantic-settings** — валидация и настройки из `.env`
+- **Google Gemini** — генерация заданий и анализ кандидатов (обычный HTTPS через `urllib`, без SDK)
+- **smtplib** — реальная отправка приглашений и решений по SMTP
+- **ffmpeg** (опционально, внешний бинарник) — индексация записей для перемотки
 
 ## Запуск
 
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate        # Windows
+.venv\Scripts\activate        # Windows (Linux/macOS: source .venv/bin/activate)
 pip install -r requirements.txt
 
-copy .env.example .env         # заполнить значения
-python -m app.seed             # демо-данные: HR-аккаунт, тесты, инвайт-ссылки
+copy .env.example .env                    # заполнить значения
+python -m app.seed                        # демо-данные: HR-аккаунт, тесты, инвайт-ссылки
+python -m app.scripts.seed_task_library   # библиотека готовых заданий (опционально)
 uvicorn app.main:app --reload --port 8000
 ```
 
 После сида доступен HR-аккаунт **hr@interviewlab.ai / Password123!** и инвайт-ссылки
-`DEMO01` (без лимитов), `RCT7Q2`, `NODE01` — кандидатская ссылка выглядит как
-`http://localhost:5173/test/DEMO01`. Повторный запуск сида безопасен (ничего не дублирует).
+`DEMO01` (без лимитов), `RCT7Q2` (50 использований, 14 дней), `NODE01` — кандидатская ссылка
+выглядит как `http://localhost:5173/test/DEMO01`. Повторный запуск сида безопасен.
 
 Swagger: http://localhost:8000/docs · Health: `GET /api/health`
+
+> Если MongoDB не поднята, приложение **всё равно стартует** и пишет в консоль
+> `[db] ERROR: cannot connect to MongoDB` — но все ручки с БД будут падать.
 
 ## .env для разработки
 
@@ -51,7 +61,23 @@ INVITE_LINK_BASE_URL=http://localhost:5173/test
 
 Секретов тут нет: `localhost:27017` — это адрес MongoDB **на твоём же компьютере**.
 Этот env одинаковый у всех, но базу он не «расшаривает» — у каждого своя (см. ниже).
-Полный список переменных (SMTP, `ANTHROPIC_API_KEY`, S3) — в `.env.example`.
+
+`CLIENT_URL` — единственный origin, разрешённый в CORS. Если фронт запущен не на
+`localhost:5173` (например, через `--host` или ngrok), этот адрес надо поменять, иначе
+браузер заблокирует запросы.
+
+Полный список переменных — в `.env.example`. Что важно знать:
+
+| Переменная | Зачем |
+|---|---|
+| `GEMINI_API_KEY` | **единственный нужный AI-ключ**: генерация заданий, макетов, анализ кандидата |
+| `GEMINI_MODEL` / `GEMINI_GENERATION_MODEL` | модели для анализа и для генерации заданий |
+| `SMTP_*`, `EMAIL_FROM` | реальная отправка приглашений и решений; без них отправка вернёт ошибку |
+| `RECORDINGS_DIR` | куда складывать записи сессий (по умолчанию `./data/recordings`) |
+| `RECORDING_RETENTION_DAYS` | через сколько дней запись удаляется фоновой задачей (30) |
+| `RECORDING_MAX_BYTES` / `RECORDING_MAX_CHUNK_BYTES` | лимиты на размер записи (2 ГБ) и чанка (25 МБ) |
+| `ANTHROPIC_API_KEY`, `AI_MODEL`, `GROQ_API_KEY`, `GROQ_MODEL` | **не используются кодом** — задел на будущее, получать ключи не нужно |
+| `S3_*` | объявлены в `.env.example`, но загрузка в S3 пока не реализована |
 
 ## MongoDB
 
@@ -92,7 +118,8 @@ INVITE_LINK_BASE_URL=http://localhost:5173/test
 ## Как посмотреть коллекции
 
 База: `interviewlab` (см. `MONGODB_DB` в `.env`). Коллекции создаются при первой записи —
-после `python -m app.seed` появятся `users`, `companies`, `tests`, `candidates`.
+после сидов появятся `users`, `companies`, `tests`, `task_templates`, `candidates`,
+`sessions`, `invitations`.
 
 - **MongoDB Compass** (GUI, рекомендую) — [скачать](https://www.mongodb.com/try/download/compass),
   строка подключения `mongodb://localhost:27017`, слева база `interviewlab`
@@ -103,49 +130,111 @@ INVITE_LINK_BASE_URL=http://localhost:5173/test
 
 ```
 app/
-  main.py             # приложение, CORS, lifespan (инициализация БД)
+  main.py                  # приложение, CORS, lifespan (init БД + фоновая чистка записей)
+  seed.py                  # демо-данные: компания, HR, тесты, ссылки, кандидаты
+  task_catalog.py          # каталог готовых заданий (источник для библиотеки)
   core/
-    config.py         # настройки из .env (pydantic-settings)
-    db.py             # подключение Mongo + init_beanie
-    security.py       # jwt, хэширование паролей, get_current_user_id
-  models/             # Beanie-документы: User, Company, Test, Candidate, Session, Invitation
-  schemas/            # Pydantic-схемы запросов/ответов
+    config.py              # настройки из .env (pydantic-settings)
+    db.py                  # подключение Mongo + init_beanie
+    security.py            # jwt, хэширование паролей, get_current_user_id
+    tenant.py              # current_company_id — мультитенантность
+    lookup.py              # get_or_none: безопасный поиск документа по id
+  models/                  # Beanie-документы: User, Company, Test, TaskTemplate,
+                           # Candidate, Session, Invitation
+  schemas/                 # Pydantic-схемы запросов/ответов
+  services/
+    gemini.py              # генерация заданий и HTML-макетов
+    candidate_analysis.py  # AI-анализ решения кандидата
+    typing_forensics.py    # эвристика «печатал сам или вставил»
+    proctoring.py          # запись инцидентов прокторинга, уровень риска
+    recordings.py          # чанки записи, склейка, ffmpeg-индексация, ретеншен
+    emailer.py             # SMTP: приглашения и письма с решением
+    groq.py                # не подключён к роутам (задел)
   api/
-    router.py         # сборка /api
-    routes/           # auth, tests, candidates, sessions, analytics
+    router.py              # сборка /api
+    routes/                # auth, tests, task_library, candidates, sessions,
+                           # analytics, admin, ai, proctoring
+  scripts/
+    seed_task_library.py       # наполнить библиотеку заданий из task_catalog
+    backfill_proctor_timecodes.py  # проставить таймкоды инцидентам старых сессий
+    repair_recordings.py       # пересобрать/починить записи сессий
 ```
 
-## Что уже работает
+## API
 
-- `POST /api/auth/register`, `POST /api/auth/login` — реальные, с Mongo и JWT
-- CRUD тестов: список, создание, чтение, patch, удаление, дубликат
-- Инвайт-ссылки: генерация кода, toggle
-- Приглашения по email (запись в БД, без реальной отправки)
-- Кандидаты: список с фильтрами, карточка, смена статуса
-- `GET /api/analytics/dashboard` — живые счётчики из БД
-- **Живой трекинг прохождений:**
-  - `POST /api/sessions/{code}/start` — кандидат открывает ссылку, вводит имя/email → создаются Candidate + Session, проверяются лимиты/срок ссылки
-  - `POST /api/sessions/{id}/events` — воркспейс шлёт heartbeat каждые 5 сек (стадия, текущий файл, прогресс, tab switches, камера) + replay-события
-  - `POST /api/sessions/{id}/submit` — финальная отправка: файлы кандидата сохраняются в БД, сессия закрывается
-  - `GET /api/sessions/` — активные сессии для страницы Live sessions (HR)
-- **Live-прокторинг:**
-  - `WS /api/proctoring/ws/{session_id}` — авторизованный WebRTC-signaling для кандидата и HR
-  - P2P-трансляция камеры, микрофона и экрана без проксирования/записи видео на backend
-  - серверный журнал сигналов риска: телефон, второй человек, отсутствие/смена лица,
-    уход со вкладки, отключение камеры или демонстрации экрана
-  - кандидатский токен выдаётся только при старте с явным `proctoring_consent=true`
-- `python -m app.seed` — демо-данные: HR-аккаунт, 2 теста, ссылки, кандидаты
+Все ручки под `/api`. Защищённые — через `Depends(get_current_user_id)`,
+данные компании — через `Depends(current_company_id)`.
 
-## Что доработать (возвращают 501)
+**Auth** `/api/auth`
+- `POST /register`, `POST /login` — JWT + bcrypt
+- `POST /forgot-password` — заглушка: всегда отдаёт «If the email exists…», письмо не шлёт
+- `POST /reset-password` — **501, не реализовано**
 
-- `POST /auth/reset-password` — токены сброса пароля
-- `POST /candidates/{id}/analyze` — AI-анализ (Anthropic API, ключ в `.env`)
-- `GET /analytics/overview` — агрегации для страницы Analytics
-- Отправка email (SMTP-параметры в `.env`), загрузка файлов в S3
-- Мультитенантность: фильтрация всех запросов по `company_id` из JWT
+**Тесты** `/api/tests`
+- `GET /`, `POST /`, `GET /{id}`, `PATCH /{id}`, `DELETE /{id}`, `POST /{id}/duplicate`
+- `POST /{id}/links`, `POST /{id}/links/{link_id}/toggle` — инвайт-ссылки
+- `POST /{id}/invitations` — приглашения по email (реальная отправка через SMTP)
+
+**Библиотека заданий** `/api/task-library`
+- `GET /`, `POST /`, `PATCH /{id}`, `DELETE /{id}` — переиспользуемые шаблоны заданий
+
+**Кандидаты** `/api/candidates`
+- `GET /`, `GET /{id}`, `PATCH /{id}/status`
+- `POST /{id}/analyze` — AI-анализ на Gemini, `202 Accepted`, статус в `analysis_status`
+  (`not_started` → `pending` → `completed`/`failed`); `?force=true` перезапускает
+- `POST /{id}/send-results` — письмо кандидату с решением
+
+**Сессии** `/api/sessions`
+- `GET /` — активные сессии для страницы Live sessions
+- `POST /{code}/start` — старт по коду ссылки: создаются Candidate + Session,
+  проверяются лимиты и срок ссылки
+- `POST /{session_id}/events` — heartbeat каждые 5 сек (стадия, файл, прогресс,
+  tab switches) + replay-события
+- `POST /{session_id}/submit` — финальная отправка, файлы кандидата сохраняются в БД
+
+**Прокторинг** `/api/proctoring`
+- `WS /ws/{session_id}` — WebRTC-signaling между кандидатом и HR
+- `POST /events/{session_id}` — журнал инцидентов
+- `POST /recordings/{session_id}/start` · `/chunks` · `/complete` — заливка записи чанками
+- `GET /recordings/{session_id}/media` — отдача записи (с поддержкой Range)
+- `POST /recordings/{session_id}/playback-access` — токен на просмотр
+
+**Аналитика и прочее**
+- `GET /api/analytics/dashboard`, `/overview`, `/recent-invitations`, `/notifications`
+- `GET /api/team` — участники компании
+- `POST /api/ai/tasks/generate`, `POST /api/ai/tasks/mockup` — генерация на Gemini
+- `GET /api/health`
+
+## Live-прокторинг: как устроено
+
+- Кандидат до старта явно разрешает камеру, микрофон и показ **всего экрана**;
+  сессия стартует только с `proctoring_consent=true`.
+- Видео и аудио идут **peer-to-peer через WebRTC**, backend работает только как signaling —
+  поток через сервер не проксируется.
+- Компьютерное зрение крутится **в браузере кандидата** (TensorFlow.js). На сервер уходит
+  только текстовый журнал: `phone_detected`, `multiple_people`, `face_missing`,
+  `identity_mismatch`, `looking_away`, `tab_hidden`, `camera_stopped`, `camera_obstructed`,
+  `screen_share_stopped`, `paste` и т.д. По ним считается `risk_level`
+  (`low` / `medium` / `high` / `critical`).
+- Параллельно браузер пишет композит «экран + камера» через `MediaRecorder` и шлёт
+  чанками на `/recordings/...`. Файлы лежат в `RECORDINGS_DIR`, старше
+  `RECORDING_RETENTION_DAYS` удаляются фоновой задачей (проверка раз в час).
+
+**ffmpeg** ищется в `PATH`. Если его нет — запись сохранится и проиграется, но без перемотки
+по таймкодам; в консоли будет `[recordings] WARNING: ffmpeg not found`.
+Установка: `winget install Gyan.FFmpeg`.
+
+## Что доработать
+
+- `POST /auth/reset-password` — единственная 501-заглушка (нужны токены сброса пароля)
+- Загрузка файлов в S3 — переменные `S3_*` объявлены, код не написан
+- `groq.py` написан, но ни к одному роуту не подключён
+- `ANTHROPIC_API_KEY` / `AI_MODEL` объявлены в `config.py`, но нигде не читаются
 
 ## Соглашения
 
 - Все ручки под `/api/*`; защищённые — через `Depends(get_current_user_id)`
+- Выборки данных компании фильтруются по `current_company_id` — пользователь видит
+  только свои тесты, кандидатов и статистику
 - Ошибки — `HTTPException` с понятным сообщением
-- Поля в БД и API — `snake_case` (фронт мапит в camelCase на своём слое API)
+- Поля в БД и API — `snake_case` (фронт мапит в camelCase в `shared/services/backendMappers.ts`)
