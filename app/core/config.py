@@ -31,10 +31,6 @@ class Settings(BaseSettings):
     smtp_pass: str = ""
     email_from: str = "InterviewLab <no-reply@interviewlab.ai>"
 
-    anthropic_api_key: str = ""
-    ai_model: str = "claude-sonnet-5"
-    groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
     gemini_generation_model: str = "gemini-3.1-flash-lite"

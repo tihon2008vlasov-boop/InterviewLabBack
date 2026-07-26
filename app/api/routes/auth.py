@@ -16,6 +16,7 @@ def to_user_out(user: User, company_name: str) -> UserOut:
         email=user.email,
         role=user.role,
         company=company_name,
+        avatar_url=user.avatar_url,
     )
 
 

@@ -35,6 +35,8 @@ EVENT_META: dict[str, tuple[str, str, int]] = {
     "screen_share_stopped": ("critical", "Демонстрация экрана остановлена", 24),
     "camera_obstructed": ("warning", "Камера закрыта или кадр слишком тёмный", 10),
     "tab_hidden": ("warning", "Кандидат покинул вкладку теста", 5),
+    "speech_detected": ("warning", "Обнаружена речь", 2),
+    "sustained_audio": ("warning", "Продолжительная звуковая активность", 2),
 }
 
 
@@ -330,6 +332,8 @@ async def record_incident(session_id: str, raw: dict[str, Any]) -> ProctorIncide
             integrity.screen_share_interruptions += 1
         elif kind == "camera_obstructed":
             integrity.camera_obstructions += 1
+        elif kind in {"speech_detected", "sustained_audio"}:
+            integrity.speech_events += 1
         if severity != "info":
             candidate.activity = [
                 *candidate.activity[-499:],

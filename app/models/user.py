@@ -13,6 +13,16 @@ class User(Document):
     password_hash: str
     role: Role = "owner"
     company_id: str
+    avatar_url: str = ""
+    notification_preferences: dict[str, bool] = Field(
+        default_factory=lambda: {
+            "candidate_completed": True,
+            "weekly_report": False,
+            "ai_analysis": True,
+            "team_activity": True,
+            "product_updates": False,
+        }
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Settings:

@@ -8,6 +8,7 @@ from app.api.routes import (
     candidates,
     proctoring,
     sessions,
+    settings,
     task_library,
     tests,
 )
@@ -23,6 +24,7 @@ api_router.include_router(admin.router)
 api_router.include_router(ai.router)
 api_router.include_router(proctoring.router)
 api_router.include_router(task_library.router)
+api_router.include_router(settings.router)
 
 
 @api_router.get("/health", tags=["system"])

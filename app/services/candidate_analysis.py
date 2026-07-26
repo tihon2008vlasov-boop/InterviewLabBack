@@ -220,7 +220,7 @@ def _proctoring_text(candidate: Candidate, session: Session | None) -> str:
             origin = origin.replace(tzinfo=timezone.utc)
 
     lines = [
-        "PROCTORING EVIDENCE (computer-vision signals require manual confirmation):",
+        "PROCTORING EVIDENCE (computer-vision and audio signals require manual confirmation):",
         f"- backend risk score={candidate.integrity.proctor_risk_score}/100",
         (
             "- counters: "
@@ -230,6 +230,7 @@ def _proctoring_text(candidate: Candidate, session: Session | None) -> str:
             f"identity_mismatch={candidate.integrity.identity_mismatches}, "
             f"screen_stopped={candidate.integrity.screen_share_interruptions}, "
             f"camera_obstructed={candidate.integrity.camera_obstructions}, "
+            f"speech_events={candidate.integrity.speech_events}, "
             f"tab_switches={candidate.integrity.tab_switches}"
         ),
     ]
@@ -309,6 +310,9 @@ def _request_analysis(candidate: Candidate, test: Test, session: Session | None)
         f"{forensics.as_prompt_block()}\n\n"
         f"{_replay_text(candidate)}\n\n"
         f"{_proctoring_text(candidate, session)}\n\n"
+        "AUDIO ANALYSIS RULE: speech_detected contains a browser transcript and sustained_audio "
+        "contains only an acoustic activity signal. Consider repeated speech, its content and "
+        "coincidence with replay/proctoring events. Never treat one audio event as proof of cheating.\n\n"
         f"ASSIGNMENTS:\n{_task_text(test)}\n\nSOLUTIONS:\n{_solution_text(candidate)}"
     )
     body = {

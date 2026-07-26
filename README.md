@@ -51,7 +51,7 @@ INVITE_LINK_BASE_URL=http://localhost:5173/test
 
 Секретов тут нет: `localhost:27017` — это адрес MongoDB **на твоём же компьютере**.
 Этот env одинаковый у всех, но базу он не «расшаривает» — у каждого своя (см. ниже).
-Полный список переменных (SMTP, `ANTHROPIC_API_KEY`, S3) — в `.env.example`.
+Полный список переменных SMTP, Gemini и хранения записей — в `.env.example`.
 
 ## MongoDB
 

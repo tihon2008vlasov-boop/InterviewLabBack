@@ -19,6 +19,7 @@ class UserOut(BaseModel):
     email: EmailStr
     role: str
     company: str
+    avatar_url: str = ""
 
 
 class TokenOut(BaseModel):

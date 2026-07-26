@@ -109,6 +109,7 @@ class Integrity(BaseModel):
     identity_mismatches: int = 0
     screen_share_interruptions: int = 0
     camera_obstructions: int = 0
+    speech_events: int = 0
     proctor_risk_score: int = Field(default=0, ge=0, le=100)
     proctor_events: list[ProctorIncident] = Field(default_factory=list)
 
