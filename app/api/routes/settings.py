@@ -8,6 +8,7 @@ from app.core.security import get_current_user_id, hash_password, verify_passwor
 from app.models.company import Company
 from app.models.user import User
 from app.schemas.settings import CompanyPatch, NotificationPatch, PasswordChangeIn, ProfilePatch
+from app.services.images import store_image
 
 router = APIRouter(
     prefix="/settings",
@@ -63,7 +64,7 @@ async def update_profile(
         raise HTTPException(status.HTTP_409_CONFLICT, "This email is already in use")
     user.name = payload.name.strip()
     user.email = email
-    user.avatar_url = payload.avatar_url
+    user.avatar_url = await store_image(payload.avatar_url, user.avatar_url, user_id, "avatar")
     await user.save()
     return settings_out(user, company)
 
@@ -78,7 +79,9 @@ async def update_company(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only owners and admins can edit the company")
     company.name = payload.name.strip()
     company.website = payload.website.strip()
-    company.logo_url = payload.logo_url
+    company.logo_url = await store_image(
+        payload.logo_url, company.logo_url, str(company.id), "logo"
+    )
     await company.save()
     return settings_out(user, company)
 
