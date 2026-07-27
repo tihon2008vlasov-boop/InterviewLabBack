@@ -314,6 +314,14 @@ def _request_analysis(candidate: Candidate, test: Test, session: Session | None)
         "AUDIO ANALYSIS RULE: speech_detected contains a browser transcript and sustained_audio "
         "contains only an acoustic activity signal. Consider repeated speech, its content and "
         "coincidence with replay/proctoring events. Never treat one audio event as proof of cheating.\n\n"
+        "КРИТИЧЕСКОЕ ТРЕБОВАНИЕ К ЯЗЫКУ: заполни НА РУССКОМ все текстовые поля JSON, которые "
+        "увидит HR: summary, strengths, weaknesses, verdict, названия и комментарии skills и "
+        "task_scores, title/explanation/suggestion у findings, authenticity.summary/signals/"
+        "interview_questions, integrity_assessment.summary/signals и title/explanation у "
+        "review_moments. Это правило действует независимо от языка кода, задания, транскрипта "
+        "и англоязычных названий полей схемы. На английском оставляй только неизменяемые enum, "
+        "имена файлов, идентификаторы кода и дословные цитаты. Перед ответом проверь, что ни одно "
+        "человекочитаемое объяснение или вопрос не осталось на английском.\n\n"
         f"ASSIGNMENTS:\n{_task_text(test)}\n\nSOLUTIONS:\n{_solution_text(candidate)}"
     )
     body = {
