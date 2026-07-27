@@ -133,6 +133,7 @@ class Candidate(Document):
     completed_at: datetime | None = None
     duration_sec: int | None = None
     analysis_status: Literal["not_started", "pending", "completed", "failed"] = "not_started"
+    analysis_error: str = Field(default="", max_length=500)
     analyzed_at: datetime | None = None
 
     class Settings:

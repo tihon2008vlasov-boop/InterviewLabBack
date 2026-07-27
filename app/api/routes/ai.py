@@ -1,5 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.core.security import get_current_user_id
 from app.schemas.ai import (
     GeneratedMockupOut,
     GeneratedTasksOut,
@@ -8,7 +9,11 @@ from app.schemas.ai import (
 )
 from app.services.gemini import generate_mockup_with_gemini, generate_task_with_gemini
 
-router = APIRouter(prefix="/ai", tags=["ai"])
+router = APIRouter(
+    prefix="/ai",
+    tags=["ai"],
+    dependencies=[Depends(get_current_user_id)],
+)
 
 
 @router.post("/tasks/generate", response_model=GeneratedTasksOut)

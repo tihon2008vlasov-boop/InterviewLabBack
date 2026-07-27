@@ -11,7 +11,6 @@ from app.models.task_template import TaskTemplate
 from app.models.test import Test
 from app.models.user import User
 
-
 _database: AsyncDatabase | None = None
 
 

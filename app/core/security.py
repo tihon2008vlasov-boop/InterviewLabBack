@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+from jwt import InvalidTokenError
 
 from app.core.config import settings
 
@@ -38,6 +39,6 @@ async def get_current_user_id(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing access token")
     try:
         payload = decode_access_token(credentials.credentials)
-    except JWTError:
+    except InvalidTokenError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     return str(payload["sub"])

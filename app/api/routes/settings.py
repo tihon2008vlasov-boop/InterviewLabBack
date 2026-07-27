@@ -7,7 +7,12 @@ from app.core.lookup import get_or_none
 from app.core.security import get_current_user_id, hash_password, verify_password
 from app.models.company import Company
 from app.models.user import User
-from app.schemas.settings import CompanyPatch, NotificationPatch, PasswordChangeIn, ProfilePatch
+from app.schemas.settings import (
+    CompanyPatch,
+    NotificationPatch,
+    PasswordChangeIn,
+    ProfilePatch,
+)
 from app.services.images import store_image
 
 router = APIRouter(

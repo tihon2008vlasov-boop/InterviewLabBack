@@ -1,5 +1,4 @@
 import secrets
-import string
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -136,7 +135,7 @@ async def send_invitations(
     test = await get_test_or_404(test_id, company_id)
 
     # Кандидату нужна рабочая ссылка: берём активную, иначе заводим новую.
-    link = next((l for l in test.links if l.active), None)
+    link = next((item for item in test.links if item.active), None)
     if link is None:
         link = InviteLink(id=str(uuid4()), code=make_link_code())
         test.links.insert(0, link)

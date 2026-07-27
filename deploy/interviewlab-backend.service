@@ -1,0 +1,30 @@
+[Unit]
+Description=InterviewLab FastAPI backend
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=interviewlab
+Group=interviewlab
+WorkingDirectory=/opt/interviewlab-backend
+EnvironmentFile=/etc/interviewlab/backend.env
+ExecStart=/opt/interviewlab-backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8010 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/interviewlab
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitNOFILE=65536
+MemoryHigh=384M
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

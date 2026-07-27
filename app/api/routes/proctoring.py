@@ -4,10 +4,24 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Cookie, Depends, File, Form, Header, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
+import jwt
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from jose import JWTError, jwt
+from jwt import InvalidTokenError
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
@@ -17,7 +31,12 @@ from app.models.candidate import ActivityEvent, Candidate, ProctorIncident
 from app.models.session import Session
 from app.models.user import User
 from app.services.proctoring import proctoring_hub
-from app.services.recordings import combine_chunks, recording_file, reset_recording_files, save_chunk
+from app.services.recordings import (
+    combine_chunks,
+    recording_file,
+    reset_recording_files,
+    save_chunk,
+)
 
 router = APIRouter(prefix="/proctoring", tags=["proctoring"])
 
@@ -46,6 +65,20 @@ def now() -> datetime:
 
 def as_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def playback_user_id(token: str, session_id: str) -> str:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+        )
+        if payload.get("purpose") == "recording_playback" and payload.get("session_id") == session_id:
+            return str(payload["sub"])
+    except (InvalidTokenError, KeyError, TypeError):
+        pass
+    return ""
 
 
 async def candidate_recording_session(
@@ -183,30 +216,12 @@ async def stream_recording(
     if credentials is not None:
         try:
             user_id = str(decode_access_token(credentials.credentials)["sub"])
-        except (JWTError, KeyError, TypeError):
+        except (InvalidTokenError, KeyError, TypeError):
             pass
     if not user_id and access_token:
-        try:
-            payload = jwt.decode(
-                access_token,
-                settings.jwt_secret,
-                algorithms=[settings.jwt_algorithm],
-            )
-            if payload.get("purpose") == "recording_playback" and payload.get("session_id") == session_id:
-                user_id = str(payload["sub"])
-        except (JWTError, KeyError, TypeError):
-            pass
+        user_id = playback_user_id(access_token, session_id)
     if not user_id and recording_access:
-        try:
-            payload = jwt.decode(
-                recording_access,
-                settings.jwt_secret,
-                algorithms=[settings.jwt_algorithm],
-            )
-            if payload.get("purpose") == "recording_playback" and payload.get("session_id") == session_id:
-                user_id = str(payload["sub"])
-        except (JWTError, KeyError, TypeError):
-            pass
+        user_id = playback_user_id(recording_access, session_id)
     user = await get_or_none(User, user_id) if user_id else None
     if session is None or user is None or session.company_id != user.company_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording not found")
@@ -236,7 +251,7 @@ async def create_playback_access(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording not found")
     if session.recording_status != "ready" or not session.recording_path:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording not found")
-    expires = now() + timedelta(minutes=10)
+    expires = now() + timedelta(hours=2)
     playback_token = jwt.encode(
         {
             "sub": user_id,
@@ -254,11 +269,12 @@ async def create_playback_access(
             f"/proctoring/recordings/{session_id}/media"
             f"?access_token={playback_token}"
         ),
+        "access_token": playback_token,
     })
     response.set_cookie(
         key="proctor_recording_access",
         value=playback_token,
-        max_age=600,
+        max_age=2 * 60 * 60,
         httponly=True,
         secure=settings.env == "production",
         samesite="none" if settings.env == "production" else "lax",
@@ -361,7 +377,7 @@ async def authenticate(
     try:
         payload = decode_access_token(token)
         user_id = str(payload["sub"])
-    except (JWTError, KeyError, TypeError):
+    except (InvalidTokenError, KeyError, TypeError):
         return False, "", ""
     user = await get_or_none(User, user_id)
     if user is None or user.company_id != session.company_id:

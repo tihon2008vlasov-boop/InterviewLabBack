@@ -179,6 +179,7 @@ async def analyze_candidate(
     if candidate.analysis_status == "pending":
         return {"ok": True, "message": "AI analysis is already running"}
     candidate.analysis_status = "pending"
+    candidate.analysis_error = ""
     await candidate.save()
     background_tasks.add_task(
         analyze_candidate_solution,

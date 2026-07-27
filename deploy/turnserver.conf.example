@@ -1,0 +1,19 @@
+# InterviewLab TURN relay for WebRTC live proctoring.
+listening-port=3478
+listening-ip=0.0.0.0
+relay-ip=46.101.134.38
+
+fingerprint
+lt-cred-mech
+realm=app.flojia.top
+server-name=app.flojia.top
+user=interviewlab:__TURN_SECRET__
+
+min-port=49160
+max-port=49200
+stale-nonce=600
+total-quota=100
+no-cli
+no-multicast-peers
+simple-log
+log-file=stdout

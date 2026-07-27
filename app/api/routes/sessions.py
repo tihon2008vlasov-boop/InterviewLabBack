@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, status
 
 from app.core.lookup import get_or_none
 from app.core.security import get_current_user_id
@@ -15,7 +15,6 @@ from app.schemas.session import (
     SessionStartIn,
     SessionStartOut,
     SessionSubmitIn,
-    SessionTaskOut,
 )
 from app.services.candidate_analysis import analyze_candidate_solution
 from app.services.proctoring import proctoring_hub
@@ -35,6 +34,19 @@ async def get_session_or_404(session_id: str) -> Session:
     session = await get_or_none(Session, session_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+    return session
+
+
+async def get_candidate_session_or_401(
+    session_id: str,
+    candidate_token: str,
+) -> Session:
+    session = await get_session_or_404(session_id)
+    if not session.proctor_token or not secrets.compare_digest(
+        candidate_token,
+        session.proctor_token,
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid candidate token")
     return session
 
 
@@ -102,7 +114,7 @@ async def start_session(code: str, payload: SessionStartIn) -> SessionStartOut:
     if test is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invalid invite link")
 
-    link = next(l for l in test.links if l.code == code)
+    link = next(item for item in test.links if item.code == code)
     if not link.active:
         raise HTTPException(status.HTTP_410_GONE, "This invite link has been disabled")
     if link.expires_at and as_utc(link.expires_at) < now():
@@ -155,8 +167,12 @@ async def start_session(code: str, payload: SessionStartIn) -> SessionStartOut:
 
 
 @router.post("/{session_id}/events")
-async def ingest_events(session_id: str, payload: SessionEventsIn) -> dict:
-    session = await get_session_or_404(session_id)
+async def ingest_events(
+    session_id: str,
+    payload: SessionEventsIn,
+    candidate_token: str = Header(alias="X-Candidate-Token"),
+) -> dict:
+    session = await get_candidate_session_or_401(session_id, candidate_token)
     if session.ended_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Session is already finished")
 
@@ -182,9 +198,12 @@ async def ingest_events(session_id: str, payload: SessionEventsIn) -> dict:
 
 @router.post("/{session_id}/submit")
 async def submit_session(
-    session_id: str, payload: SessionSubmitIn, background_tasks: BackgroundTasks
+    session_id: str,
+    payload: SessionSubmitIn,
+    background_tasks: BackgroundTasks,
+    candidate_token: str = Header(alias="X-Candidate-Token"),
 ) -> dict:
-    session = await get_session_or_404(session_id)
+    session = await get_candidate_session_or_401(session_id, candidate_token)
     if session.ended_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Session is already finished")
 
@@ -202,6 +221,7 @@ async def submit_session(
         candidate.status = "completed"
         if candidate.score is None:
             candidate.analysis_status = "pending"
+            candidate.analysis_error = ""
         candidate.completed_at = now()
         candidate.submitted_files = payload.files
         candidate.replay.extend(ReplayEvent(**event.model_dump()) for event in payload.replay_events)

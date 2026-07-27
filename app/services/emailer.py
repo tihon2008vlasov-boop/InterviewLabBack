@@ -1,7 +1,10 @@
 import asyncio
+import json
 import logging
 import smtplib
 import ssl
+import urllib.error
+import urllib.request
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -178,6 +181,45 @@ def smtp_configured() -> bool:
     return bool(settings.smtp_host and settings.smtp_user and settings.smtp_pass)
 
 
+def resend_configured() -> bool:
+    return bool(settings.resend_api_key and settings.resend_from)
+
+
+def email_configured() -> bool:
+    return resend_configured() or smtp_configured()
+
+
+def _send_resend_sync(
+    to: str, subject: str, html: str, from_name: str = "InterviewLab", reply_to: str = ""
+) -> None:
+    from_address = parseaddr(settings.resend_from)[1]
+    if not from_address:
+        raise ValueError("RESEND_FROM должен содержать корректный email")
+    payload: dict[str, object] = {
+        "from": formataddr(
+            (str(Header(from_name or "InterviewLab", "utf-8")), from_address)
+        ),
+        "to": [to],
+        "subject": subject,
+        "html": html,
+    }
+    if reply_to:
+        payload["reply_to"] = reply_to
+    request = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {settings.resend_api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "InterviewLab/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        if response.status >= 300:
+            raise RuntimeError(f"Resend вернул HTTP {response.status}")
+
+
 def _send_sync(
     to: str, subject: str, html: str, from_name: str = "InterviewLab", reply_to: str = ""
 ) -> None:
@@ -242,11 +284,37 @@ async def send_bulk_email(
 ) -> None:
     if not recipients:
         return
-    if not smtp_configured():
+    if not email_configured():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Отправка почты не настроена: заполните SMTP_HOST, SMTP_USER и SMTP_PASS в backend/.env",
+            "Отправка почты не настроена: заполните RESEND_API_KEY или SMTP-параметры.",
         )
+    if resend_configured():
+        try:
+            for recipient in recipients:
+                await asyncio.to_thread(
+                    _send_resend_sync,
+                    recipient,
+                    subject,
+                    html,
+                    from_name,
+                    reply_to,
+                )
+            logger.info("Sent %s emails through Resend: %s", len(recipients), subject)
+            return
+        except urllib.error.HTTPError as exc:
+            response_body = exc.read().decode("utf-8", errors="replace")[:500]
+            logger.exception("Resend bulk send failed: %s", response_body)
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Resend не принял письмо (HTTP {exc.code}). Проверьте API-ключ и домен отправителя.",
+            ) from exc
+        except (urllib.error.URLError, OSError, ValueError, RuntimeError) as exc:
+            logger.exception("Resend bulk send failed")
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Не удалось отправить письмо через Resend: {exc}",
+            ) from exc
     try:
         await asyncio.to_thread(_send_bulk_sync, recipients, subject, html, from_name, reply_to)
         logger.info("Sent %s emails: %s", len(recipients), subject)
@@ -271,11 +339,36 @@ async def send_email(
     from_name: str = "InterviewLab",
     reply_to: str = "",
 ) -> None:
-    if not smtp_configured():
+    if not email_configured():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Отправка почты не настроена: заполните SMTP_HOST, SMTP_USER и SMTP_PASS в backend/.env",
+            "Отправка почты не настроена: заполните RESEND_API_KEY или SMTP-параметры.",
         )
+    if resend_configured():
+        try:
+            await asyncio.to_thread(
+                _send_resend_sync,
+                to,
+                subject,
+                html,
+                from_name,
+                reply_to,
+            )
+            logger.info("Email sent through Resend to %s: %s", to, subject)
+            return
+        except urllib.error.HTTPError as exc:
+            response_body = exc.read().decode("utf-8", errors="replace")[:500]
+            logger.exception("Resend send failed: %s", response_body)
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Resend не принял письмо (HTTP {exc.code}). Проверьте API-ключ и домен отправителя.",
+            ) from exc
+        except (urllib.error.URLError, OSError, ValueError, RuntimeError) as exc:
+            logger.exception("Resend send failed")
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"Не удалось отправить письмо через Resend: {exc}",
+            ) from exc
     try:
         await asyncio.to_thread(_send_sync, to, subject, html, from_name, reply_to)
         logger.info("Email sent to %s: %s", to, subject)

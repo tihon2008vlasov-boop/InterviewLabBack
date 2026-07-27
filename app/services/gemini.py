@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import socket
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -249,7 +248,7 @@ async def generate_mockup_with_gemini(payload: GenerateMockupIn) -> GeneratedMoc
                     status.HTTP_502_BAD_GATEWAY,
                     f"Gemini API error: {detail}",
                 ) from exc
-        except (URLError, TimeoutError, socket.timeout) as exc:
+        except (URLError, TimeoutError) as exc:
             logger.warning("Gemini mockup connection error on attempt %s: %s", attempt, exc)
             if attempt == MAX_GEMINI_ATTEMPTS:
                 raise HTTPException(
@@ -288,7 +287,7 @@ async def generate_task_with_gemini(payload: GenerateTaskIn) -> GeneratedTasksOu
                     status.HTTP_502_BAD_GATEWAY,
                     f"Gemini API error: {detail}",
                 ) from exc
-        except (URLError, TimeoutError, socket.timeout) as exc:
+        except (URLError, TimeoutError) as exc:
             logger.warning("Gemini connection error on attempt %s: %s", attempt, exc)
             if attempt == MAX_GEMINI_ATTEMPTS:
                 raise HTTPException(

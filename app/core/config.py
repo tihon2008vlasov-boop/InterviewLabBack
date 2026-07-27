@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_db: str = "interviewlab"
 
-    jwt_secret: str = "dev-secret"
+    jwt_secret: str = "interviewlab-local-secret-change-before-prod"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
 
@@ -30,10 +30,13 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_pass: str = ""
     email_from: str = "InterviewLab <no-reply@interviewlab.ai>"
+    resend_api_key: str = ""
+    resend_from: str = "InterviewLab <notifications@send.flojia.top>"
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
     gemini_generation_model: str = "gemini-3.1-flash-lite"
+    gemini_analysis_model: str = "gemini-3.1-flash-lite"
 
 
 @lru_cache

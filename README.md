@@ -10,21 +10,25 @@ API платформы технического скрининга: тесты �
 
 - **FastAPI** — HTTP API + WebSocket, автодокументация на `/docs`
 - **MongoDB + Beanie (Motor)** — асинхронная ODM
-- **JWT (python-jose) + bcrypt** — авторизация
+- **JWT (PyJWT) + bcrypt** — авторизация
 - **Pydantic v2 / pydantic-settings** — валидация и настройки из `.env`
 - **Google Gemini** — генерация заданий и анализ кандидатов (обычный HTTPS через `urllib`, без SDK)
-- **smtplib** — реальная отправка приглашений и решений по SMTP
+- **Resend HTTPS API / smtplib** — отправка писем через Resend с SMTP-fallback
 - **ffmpeg** (опционально, внешний бинарник) — индексация записей для перемотки
 
 ## Запуск
 
+Требования: Python `3.11+` и MongoDB Community Server либо MongoDB Atlas.
+
 ```bash
-cd backend
+git clone https://github.com/tihon2008vlasov-boop/InterviewLabBack.git
+cd InterviewLabBack
 python -m venv .venv
 .venv\Scripts\activate        # Windows (Linux/macOS: source .venv/bin/activate)
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 
-copy .env.example .env                    # заполнить значения
+copy .env.example .env        # Linux/macOS: cp .env.example .env
 python -m app.seed                        # демо-данные: HR-аккаунт, тесты, инвайт-ссылки
 python -m app.scripts.seed_task_library   # библиотека готовых заданий (опционально)
 uvicorn app.main:app --reload --port 8000
@@ -52,7 +56,7 @@ CLIENT_URL=http://localhost:5173
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DB=interviewlab
 
-JWT_SECRET=interviewlab-dev-secret-2026
+JWT_SECRET=interviewlab-local-secret-change-before-prod
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=10080
 
@@ -72,7 +76,8 @@ INVITE_LINK_BASE_URL=http://localhost:5173/test
 |---|---|
 | `GEMINI_API_KEY` | **единственный AI-ключ в проекте**: генерация заданий, макетов, анализ кандидата |
 | `GEMINI_MODEL` / `GEMINI_GENERATION_MODEL` | модели для анализа и для генерации заданий |
-| `SMTP_*`, `EMAIL_FROM` | реальная отправка приглашений и решений; без них отправка вернёт ошибку |
+| `RESEND_API_KEY`, `RESEND_FROM` | рекомендуемый способ отправки писем через HTTPS; домен отправителя должен быть подтверждён в Resend |
+| `SMTP_*`, `EMAIL_FROM` | необязательный fallback: используется, если `RESEND_API_KEY` пуст |
 | `RECORDINGS_DIR` | куда складывать записи сессий (по умолчанию `./data/recordings`) |
 | `RECORDING_RETENTION_DAYS` | через сколько дней запись удаляется фоновой задачей (30) |
 | `RECORDING_MAX_BYTES` / `RECORDING_MAX_CHUNK_BYTES` | лимиты на размер записи (2 ГБ) и чанка (25 МБ) |
@@ -146,7 +151,7 @@ app/
     typing_forensics.py    # эвристика «печатал сам или вставил»
     proctoring.py          # запись инцидентов прокторинга, уровень риска
     recordings.py          # чанки записи, склейка, ffmpeg-индексация, ретеншен
-    emailer.py             # SMTP: приглашения и письма с решением
+    emailer.py             # Resend HTTPS + SMTP-fallback: приглашения и решения
   api/
     router.py              # сборка /api
     routes/                # auth, tests, task_library, candidates, sessions,
@@ -155,6 +160,9 @@ app/
     seed_task_library.py   # наполнить библиотеку заданий из task_catalog
     repair_recordings.py   # пересобрать/починить записи сессий
 ```
+
+`deploy/` содержит примеры systemd, Nginx и coturn для production. Для локального
+запуска эта папка не нужна и не содержит секретов.
 
 ## API
 
@@ -169,7 +177,7 @@ app/
 **Тесты** `/api/tests`
 - `GET /`, `POST /`, `GET /{id}`, `PATCH /{id}`, `DELETE /{id}`, `POST /{id}/duplicate`
 - `POST /{id}/links`, `POST /{id}/links/{link_id}/toggle` — инвайт-ссылки
-- `POST /{id}/invitations` — приглашения по email (реальная отправка через SMTP)
+- `POST /{id}/invitations` — приглашения по email (Resend либо SMTP-fallback)
 
 **Библиотека заданий** `/api/task-library`
 - `GET /`, `POST /`, `PATCH /{id}`, `DELETE /{id}` — переиспользуемые шаблоны заданий

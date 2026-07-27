@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import socket
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -8,9 +9,9 @@ from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.core.lookup import get_or_none
 from app.core.config import settings
-from app.models.candidate import AIRecommendation, AIReport, ActivityEvent, Candidate
+from app.core.lookup import get_or_none
+from app.models.candidate import ActivityEvent, AIRecommendation, AIReport, Candidate
 from app.models.session import Session
 from app.models.test import Test
 from app.services.typing_forensics import analyze_typing
@@ -272,7 +273,7 @@ def _recommendation_for_score(score: int) -> AIRecommendation:
 
 
 def _request_analysis(candidate: Candidate, test: Test, session: Session | None) -> AnalysisResult:
-    model = quote(settings.gemini_model, safe="")
+    model = quote(settings.gemini_analysis_model, safe="")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     forensics = analyze_typing(candidate)
     prompt = (
@@ -347,13 +348,22 @@ def _request_analysis(candidate: Candidate, test: Test, session: Session | None)
 
 
 async def analyze_candidate_solution(candidate_id: str, test_id: str, force: bool = False) -> None:
-    if not settings.gemini_api_key:
-        logger.error("Candidate analysis skipped: GEMINI_API_KEY is not configured")
-        return
-
     candidate = await get_or_none(Candidate, candidate_id)
     test = await get_or_none(Test, test_id)
+    if not settings.gemini_api_key:
+        logger.error("Candidate analysis skipped: GEMINI_API_KEY is not configured")
+        if candidate is not None:
+            candidate.analysis_status = "failed"
+            candidate.analysis_error = "GEMINI_API_KEY не настроен на сервере."
+            await candidate.save()
+        return
     if candidate is None or test is None or not candidate.submitted_files:
+        if candidate is not None:
+            candidate.analysis_status = "failed"
+            candidate.analysis_error = (
+                "Не найден тест или отправленное решение кандидата."
+            )
+            await candidate.save()
         return
     if candidate.status != "completed" or (candidate.score is not None and not force):
         return
@@ -364,6 +374,7 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str, force: boo
     )
 
     candidate.analysis_status = "pending"
+    candidate.analysis_error = ""
     await candidate.save()
 
     try:
@@ -383,7 +394,9 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str, force: boo
                     MAX_ANALYSIS_ATTEMPTS,
                     detail[:4000],
                 )
-            except (URLError, KeyError, IndexError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+                if exc.code not in {429, 500, 502, 503, 504}:
+                    break
+            except (URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError, ValidationError, ValueError) as exc:
                 last_error = exc
                 logger.warning(
                     "Invalid candidate analysis for %s on attempt %s/%s: %s",
@@ -407,6 +420,7 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str, force: boo
         candidate.ai_recommendation = _recommendation_for_score(candidate.score)
         candidate.ai_report = result.report
         candidate.analysis_status = "completed"
+        candidate.analysis_error = ""
         candidate.analyzed_at = datetime.now(timezone.utc)
         candidate.activity.append(
             ActivityEvent(
@@ -420,4 +434,21 @@ async def analyze_candidate_solution(candidate_id: str, test_id: str, force: boo
     except Exception as exc:
         logger.exception("Candidate analysis failed for %s: %s", candidate_id, exc)
         candidate.analysis_status = "failed"
+        cause = exc.__cause__ if exc.__cause__ is not None else exc
+        if isinstance(cause, HTTPError) and cause.code == 429:
+            candidate.analysis_error = (
+                "Лимит AI-провайдера исчерпан. Повторите анализ позже."
+            )
+        elif isinstance(cause, HTTPError) and cause.code in {401, 403}:
+            candidate.analysis_error = (
+                "AI-провайдер отклонил ключ доступа. Проверьте конфигурацию сервера."
+            )
+        elif isinstance(cause, (URLError, TimeoutError, socket.timeout)):
+            candidate.analysis_error = (
+                "AI-провайдер не ответил вовремя. Запустите анализ повторно."
+            )
+        else:
+            candidate.analysis_error = (
+                "AI-провайдер не смог обработать решение. Запустите анализ повторно."
+            )
         await candidate.save()
