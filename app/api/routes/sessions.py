@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from app.core.lookup import get_or_none
 from app.core.security import get_current_user_id
 from app.models.candidate import ActivityEvent, Candidate, ReplayEvent
+from app.models.invitation import Invitation
 from app.models.session import Session
 from app.models.test import Test
 from app.models.user import User
@@ -139,6 +140,19 @@ async def start_session(code: str, payload: SessionStartIn) -> SessionStartOut:
             ],
         )
     )
+    matching_invitations = (
+        await Invitation.find(
+            Invitation.company_id == test.company_id,
+            Invitation.test_id == str(test.id),
+            Invitation.email == payload.email,
+        )
+        .sort(-Invitation.sent_at)
+        .limit(1)
+        .to_list()
+    )
+    if matching_invitations:
+        matching_invitations[0].status = "started"
+        await matching_invitations[0].save()
     session = await Session.insert_one(
         Session(
             company_id=test.company_id,
@@ -232,6 +246,19 @@ async def submit_session(
             ActivityEvent(at=now(), kind="submitted", label="Submitted the test")
         )
         await candidate.save()
+        matching_invitations = (
+            await Invitation.find(
+                Invitation.company_id == candidate.company_id,
+                Invitation.test_id == candidate.test_id,
+                Invitation.email == candidate.email,
+            )
+            .sort(-Invitation.sent_at)
+            .limit(1)
+            .to_list()
+        )
+        if matching_invitations:
+            matching_invitations[0].status = "completed"
+            await matching_invitations[0].save()
         if candidate.score is None:
             background_tasks.add_task(
                 analyze_candidate_solution,

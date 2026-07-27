@@ -180,23 +180,80 @@ async def recent_invitations(company_id: str = Depends(current_company_id)) -> l
     invitations = (
         await Invitation.find(Invitation.company_id == company_id)
         .sort(-Invitation.sent_at)
-        .limit(8)
+        .limit(16)
+        .to_list()
+    )
+    candidates = (
+        await Candidate.find(Candidate.company_id == company_id)
+        .sort(-Candidate.invited_at)
+        .limit(16)
         .to_list()
     )
     tests = {
         str(t.id): t.name for t in await Test.find(Test.company_id == company_id).to_list()
     }
-    return [
-        {
-            "id": str(i.id),
-            "email": i.email,
-            "test_id": i.test_id,
-            "test_name": tests.get(i.test_id, "—"),
-            "sent_at": i.sent_at.isoformat(),
-            "status": i.status,
-        }
-        for i in invitations
-    ]
+
+    status_priority = {"sent": 0, "opened": 1, "started": 2, "completed": 3}
+    candidate_status = {
+        "invited": "sent",
+        "in_progress": "started",
+        "completed": "completed",
+        "reviewed": "completed",
+        "hired": "completed",
+        "rejected": "completed",
+    }
+    merged: dict[tuple[str, str], dict] = {}
+
+    def merge_item(item: dict, occurred_at: datetime) -> None:
+        key = (str(item["email"]).lower(), item["test_id"])
+        current = merged.get(key)
+        if current is None:
+            item["_occurred_at"] = occurred_at
+            merged[key] = item
+            return
+        best_status = max(
+            (current["status"], item["status"]),
+            key=lambda status: status_priority[status],
+        )
+        if occurred_at > current["_occurred_at"]:
+            current.update(item)
+            current["_occurred_at"] = occurred_at
+        current["status"] = best_status
+
+    for invitation in invitations:
+        sent_at = as_utc(invitation.sent_at) or datetime.now(timezone.utc)
+        merge_item(
+            {
+                "id": f"invitation-{invitation.id}",
+                "email": str(invitation.email),
+                "test_id": invitation.test_id,
+                "test_name": tests.get(invitation.test_id, "—"),
+                "sent_at": sent_at.isoformat(),
+                "status": invitation.status,
+            },
+            sent_at,
+        )
+
+    # Shared test links create Candidate records directly, without an Invitation.
+    # Include them so the dashboard reflects every real invite/start and is not empty.
+    for candidate in candidates:
+        invited_at = as_utc(candidate.invited_at) or datetime.now(timezone.utc)
+        merge_item(
+            {
+                "id": f"candidate-{candidate.id}",
+                "email": str(candidate.email),
+                "test_id": candidate.test_id,
+                "test_name": tests.get(candidate.test_id, "—"),
+                "sent_at": invited_at.isoformat(),
+                "status": candidate_status[candidate.status],
+            },
+            invited_at,
+        )
+
+    result = sorted(merged.values(), key=lambda item: item["_occurred_at"], reverse=True)[:8]
+    for item in result:
+        item.pop("_occurred_at", None)
+    return result
 
 
 @router.get("/notifications")
